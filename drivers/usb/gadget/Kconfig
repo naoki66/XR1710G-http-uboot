@@ -89,6 +89,7 @@ config USB_GADGET_PRODUCT_NUM
 	default 0x350b if ROCKCHIP_RK3588
 	default 0x350c if ROCKCHIP_RK3528
 	default 0x350e if ROCKCHIP_RK3576
+	default 0x350f if ROCKCHIP_RK3506
 	default 0x4ee0 if ARCH_SNAPDRAGON
 	default 0x0
 	help
@@ -118,6 +119,7 @@ config USB_GADGET_DWC2_OTG
 
 config USB_RENESAS_USBHS
 	bool "Renesas R-Car USB2.0 HS controller (gadget mode)"
+	depends on DM_USB_GADGET
 	select USB_GADGET_DUALSPEED
 	help
 	  The Renesas R-Car USB 2.0 high-speed gadget controller
@@ -231,7 +233,7 @@ endif # USB_GADGET_DOWNLOAD
 
 config USB_ETHER
 	bool "USB Ethernet Gadget"
-	depends on NET || NET_LWIP
+	depends on NET
 	default y if ARCH_SUNXI && USB_MUSB_GADGET
 	help
 	  Creates an Ethernet network device through a USB peripheral

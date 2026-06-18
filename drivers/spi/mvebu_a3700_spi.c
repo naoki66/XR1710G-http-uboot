@@ -11,13 +11,10 @@
 #include <spi.h>
 #include <clk.h>
 #include <wait_bit.h>
-#include <asm/global_data.h>
 #include <asm/io.h>
 #include <dm/device_compat.h>
 #include <linux/bitops.h>
 #include <asm/gpio.h>
-
-DECLARE_GLOBAL_DATA_PTR;
 
 #define MVEBU_SPI_A3700_XFER_RDY		BIT(1)
 #define MVEBU_SPI_A3700_FIFO_FLUSH		BIT(9)
@@ -310,8 +307,8 @@ static const struct udevice_id mvebu_spi_ids[] = {
 	{ }
 };
 
-U_BOOT_DRIVER(mvebu_spi) = {
-	.name = "mvebu_spi",
+U_BOOT_DRIVER(mvebu_a3700_spi) = {
+	.name = "mvebu_a3700_spi",
 	.id = UCLASS_SPI,
 	.of_match = mvebu_spi_ids,
 	.ops = &mvebu_spi_ops,

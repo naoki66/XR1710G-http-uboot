@@ -86,6 +86,7 @@ static const struct {
 	{"swap",	NULL,	PARTITION_LINUX_SWAP_GUID},
 	{"lvm",		NULL,	PARTITION_LINUX_LVM_GUID},
 	{"u-boot-env",	NULL,	PARTITION_U_BOOT_ENVIRONMENT},
+	{"xbootldr",	NULL,	PARTITION_XBOOTLDR},
 	{"cros-kern",	NULL,	PARTITION_CROS_KERNEL},
 	{"cros-root",	NULL,	PARTITION_CROS_ROOT},
 	{"cros-fw",	NULL,	PARTITION_CROS_FIRMWARE},
@@ -254,6 +255,12 @@ static const struct {
 		NULL, "EFI Conformance Profiles Table",
 		EFI_CONFORMANCE_PROFILES_TABLE_GUID,
 	},
+#if CONFIG_IS_ENABLED(EFI_ECPT)
+	{
+		NULL, "EFI EBBR 2.1 Conformance Profile",
+		EFI_CONFORMANCE_PROFILE_EBBR_2_1_GUID,
+	},
+#endif
 #ifdef CONFIG_EFI_RISCV_BOOT_PROTOCOL
 	{
 		NULL, "RISC-V Boot",

@@ -19,6 +19,7 @@
 #include <dm/device-internal.h>
 #include <malloc.h>
 #include <hexdump.h>
+#include <phys2bus.h>
 #include <scsi.h>
 #include <ufs.h>
 #include <asm/io.h>
@@ -125,11 +126,6 @@ static void ufshcd_print_pwr_info(struct ufs_hba *hba)
 		names[hba->pwr_info.pwr_rx],
 		names[hba->pwr_info.pwr_tx],
 		hba->pwr_info.hs_rate);
-}
-
-static void ufshcd_device_reset(struct ufs_hba *hba)
-{
-	ufshcd_vops_device_reset(hba);
 }
 
 /**
@@ -471,13 +467,13 @@ static int ufshcd_make_hba_operational(struct ufs_hba *hba)
 	ufshcd_disable_intr_aggr(hba);
 
 	/* Configure UTRL and UTMRL base address registers */
-	ufshcd_writel(hba, lower_32_bits((dma_addr_t)hba->utrdl),
+	ufshcd_writel(hba, lower_32_bits(dev_phys_to_bus(hba->dev, (phys_addr_t)(uintptr_t)(hba->utrdl))),
 		      REG_UTP_TRANSFER_REQ_LIST_BASE_L);
-	ufshcd_writel(hba, upper_32_bits((dma_addr_t)hba->utrdl),
+	ufshcd_writel(hba, upper_32_bits(dev_phys_to_bus(hba->dev, (phys_addr_t)(uintptr_t)(hba->utrdl))),
 		      REG_UTP_TRANSFER_REQ_LIST_BASE_H);
-	ufshcd_writel(hba, lower_32_bits((dma_addr_t)hba->utmrdl),
+	ufshcd_writel(hba, lower_32_bits(dev_phys_to_bus(hba->dev, (phys_addr_t)(uintptr_t)(hba->utmrdl))),
 		      REG_UTP_TASK_REQ_LIST_BASE_L);
-	ufshcd_writel(hba, upper_32_bits((dma_addr_t)hba->utmrdl),
+	ufshcd_writel(hba, upper_32_bits(dev_phys_to_bus(hba->dev, (phys_addr_t)(uintptr_t)(hba->utmrdl))),
 		      REG_UTP_TASK_REQ_LIST_BASE_H);
 
 	/*
@@ -512,7 +508,9 @@ static int ufshcd_link_startup(struct ufs_hba *hba)
 	int retries = DME_LINKSTARTUP_RETRIES;
 
 	do {
-		ufshcd_ops_link_startup_notify(hba, PRE_CHANGE);
+		ret = ufshcd_ops_link_startup_notify(hba, PRE_CHANGE);
+		if (ret)
+			goto out;
 
 		ret = ufshcd_dme_link_startup(hba);
 
@@ -598,12 +596,18 @@ static inline void ufshcd_hba_start(struct ufs_hba *hba)
 static int ufshcd_hba_enable(struct ufs_hba *hba)
 {
 	int retry;
+	int ret;
 
 	if (!ufshcd_is_hba_active(hba))
 		/* change controller state to "reset state" */
 		ufshcd_hba_stop(hba);
 
-	ufshcd_ops_hce_enable_notify(hba, PRE_CHANGE);
+	ret = ufshcd_ops_hce_enable_notify(hba, PRE_CHANGE);
+	if (ret) {
+		dev_err(hba->dev, "Controller enable notify PRE_CHANGE failed: %i\n",
+			ret);
+		return ret;
+	}
 
 	/* start controller initialization sequence */
 	ufshcd_hba_start(hba);
@@ -635,7 +639,12 @@ static int ufshcd_hba_enable(struct ufs_hba *hba)
 	/* enable UIC related interrupts */
 	ufshcd_enable_intr(hba, UFSHCD_UIC_MASK);
 
-	ufshcd_ops_hce_enable_notify(hba, POST_CHANGE);
+	ret = ufshcd_ops_hce_enable_notify(hba, POST_CHANGE);
+	if (ret) {
+		dev_err(hba->dev, "Controller enable notify POST_CHANGE failed: %i\n",
+			ret);
+		return ret;
+	}
 
 	return 0;
 }
@@ -652,7 +661,7 @@ static void ufshcd_host_memory_configure(struct ufs_hba *hba)
 	u16 prdt_offset;
 
 	utrdlp = hba->utrdl;
-	cmd_desc_dma_addr = (dma_addr_t)hba->ucdl;
+	cmd_desc_dma_addr = dev_phys_to_bus(hba->dev, (phys_addr_t)(uintptr_t)(hba->ucdl));
 
 	utrdlp->command_desc_base_addr_lo =
 				cpu_to_le32(lower_32_bits(cmd_desc_dma_addr));
@@ -1604,12 +1613,15 @@ void ufshcd_prepare_utp_scsi_cmd_upiu(struct ufs_hba *hba,
 	ufshcd_cache_flush(hba->ucd_rsp_ptr, sizeof(*hba->ucd_rsp_ptr));
 }
 
-static inline void prepare_prdt_desc(struct ufshcd_sg_entry *entry,
+static inline void prepare_prdt_desc(struct ufs_hba *hba,
+				     struct ufshcd_sg_entry *entry,
 				     unsigned char *buf, ulong len)
 {
+	dma_addr_t da = dev_phys_to_bus(hba->dev, (phys_addr_t)(uintptr_t)buf);
+
 	entry->size = cpu_to_le32(len) | GENMASK(1, 0);
-	entry->base_addr = cpu_to_le32(lower_32_bits((unsigned long)buf));
-	entry->upper_addr = cpu_to_le32(upper_32_bits((unsigned long)buf));
+	entry->base_addr = cpu_to_le32(lower_32_bits(da));
+	entry->upper_addr = cpu_to_le32(upper_32_bits(da));
 }
 
 static void prepare_prdt_table(struct ufs_hba *hba, struct scsi_cmd *pccb)
@@ -1631,13 +1643,13 @@ static void prepare_prdt_table(struct ufs_hba *hba, struct scsi_cmd *pccb)
 	buf = pccb->pdata;
 	i = table_length;
 	while (--i) {
-		prepare_prdt_desc(&prd_table[table_length - i - 1], buf,
+		prepare_prdt_desc(hba, &prd_table[table_length - i - 1], buf,
 				  MAX_PRDT_ENTRY - 1);
 		buf += MAX_PRDT_ENTRY;
 		datalen -= MAX_PRDT_ENTRY;
 	}
 
-	prepare_prdt_desc(&prd_table[table_length - i - 1], buf, datalen - 1);
+	prepare_prdt_desc(hba, &prd_table[table_length - i - 1], buf, datalen - 1);
 
 	req_desc->prd_table_length = table_length;
 	ufshcd_cache_flush(prd_table, sizeof(*prd_table) * table_length);
@@ -1739,7 +1751,15 @@ static int ufshcd_read_string_desc(struct ufs_hba *hba, int desc_index,
 			goto out;
 		}
 
-		buff_ascii = kmalloc(ascii_len, GFP_KERNEL);
+		/*
+		 * utf-8 is encoded using up to 4-Bytes per character,
+		 * however, we only allocate such a buffer because the
+		 * utf16_to_utf8() converts the entire $ascii_len worth
+		 * of input characters into up to 4-Byte long utf-8
+		 * characters. The rest of the function uses only up to
+		 * $ascii_len bytes of that utf-8 string.
+		 */
+		buff_ascii = kmalloc(ascii_len * 4, GFP_KERNEL);
 		if (!buff_ascii) {
 			err = -ENOMEM;
 			goto out;
@@ -2184,7 +2204,11 @@ int ufshcd_probe(struct udevice *ufs_dev, struct ufs_hba_ops *hba_ops)
 	/* Set descriptor lengths to specification defaults */
 	ufshcd_def_desc_sizes(hba);
 
-	ufshcd_ops_init(hba);
+	err = ufshcd_ops_init(hba);
+	if (err) {
+		dev_err(hba->dev, "Host controller init failed: %i\n", err);
+		return err;
+	}
 
 	/* Read capabilities registers */
 	hba->capabilities = ufshcd_readl(hba, REG_CONTROLLER_CAPABILITIES);
@@ -2228,7 +2252,11 @@ int ufshcd_probe(struct udevice *ufs_dev, struct ufs_hba_ops *hba_ops)
 	mb(); /* flush previous writes */
 
 	/* Reset the attached device */
-	ufshcd_device_reset(hba);
+	err = ufshcd_vops_device_reset(hba);
+	if (err) {
+		dev_err(hba->dev, "Failed to reset attached device: %i\n", err);
+		return err;
+	}
 
 	err = ufshcd_hba_enable(hba);
 	if (err) {

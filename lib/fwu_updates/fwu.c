@@ -244,6 +244,39 @@ int fwu_sync_mdata(struct fwu_mdata *mdata, int part)
 }
 
 /**
+ * fwu_mdata_get_image_guid() - Get image GUID for a type and bank
+ * @image_guid: Pointer to be filled with the found image GUID
+ * @image_type_guid: Pointer to the image type GUID to search for
+ * @bank_index: Index of the bank
+ *
+ * Return: 0 if OK, -ve on error
+ */
+int fwu_mdata_get_image_guid(efi_guid_t *image_guid,
+			     const efi_guid_t *image_type_guid, u32 bank_index)
+{
+	struct fwu_data *data = &g_fwu_data;
+	struct fwu_image_entry *image;
+	int i;
+
+	if (bank_index >= data->num_banks)
+		return -EINVAL;
+
+	for (i = 0; i < data->num_images; i++) {
+		image = &data->fwu_images[i];
+
+		if (!guidcmp(image_type_guid, &image->image_type_guid)) {
+			struct fwu_image_bank_info *bank;
+
+			bank = &image->img_bank_info[bank_index];
+			guidcpy(image_guid, &bank->image_guid);
+			return 0;
+		}
+	}
+
+	return -ENOENT;
+}
+
+/**
  * fwu_mdata_copies_allocate() - Allocate memory for metadata
  * @mdata_size: Size of the metadata structure
  *
@@ -766,6 +799,12 @@ static int fwu_boottime_checks(void)
 	if (boot_idx != active_idx) {
 		log_info("Boot idx %u is not matching active idx %u, changing active_idx\n",
 			 boot_idx, active_idx);
+
+		ret = fwu_state_machine_updates(FWU_BANK_INVALID, active_idx);
+		if (ret)
+			log_err("Unable to set bank %u state as invalid",
+				active_idx);
+
 		ret = fwu_set_active_index(boot_idx);
 		if (!ret)
 			boottime_check = 1;
@@ -790,4 +829,4 @@ static int fwu_boottime_checks(void)
 
 	return 0;
 }
-EVENT_SPY_SIMPLE(EVT_MAIN_LOOP, fwu_boottime_checks);
+EVENT_SPY_SIMPLE(EVT_POST_PREBOOT, fwu_boottime_checks);

@@ -14,12 +14,9 @@
 #include <reset.h>
 #include <spl.h>
 #include <watchdog.h>
-#include <asm/global_data.h>
 #include <linux/err.h>
 #include <linux/types.h>
 #include <asm/io.h>
-
-DECLARE_GLOBAL_DATA_PTR;
 
 #define UART_LCRVAL UART_LCR_8N1		/* 8 data, 1 stop, no parity */
 #define UART_MCRVAL (UART_MCR_DTR | \
@@ -140,9 +137,9 @@ static int serial_in_dynamic(struct ns16550_plat *plat, u8 *addr)
 		}
 	} else if (plat->flags & NS16550_FLAG_BE) {
 		return readb(addr + (1 << plat->reg_shift) - 1);
-	} else {
-		return readb(addr);
 	}
+
+	return readb(addr);
 }
 #else
 static inline void serial_out_dynamic(struct ns16550_plat *plat, u8 *addr,
@@ -589,6 +586,7 @@ const struct dm_serial_ops ns16550_serial_ops = {
 	.getinfo = ns16550_serial_getinfo,
 };
 
+#if CONFIG_IS_ENABLED(SERIAL_PRESENT)
 #if CONFIG_IS_ENABLED(OF_REAL)
 /*
  * Please consider existing compatible strings before adding a new
@@ -605,8 +603,6 @@ static const struct udevice_id ns16550_serial_ids[] = {
 	{}
 };
 #endif /* OF_REAL */
-
-#if CONFIG_IS_ENABLED(SERIAL_PRESENT)
 
 /* TODO(sjg@chromium.org): Integrate this into a macro like CONFIG_IS_ENABLED */
 #if !defined(CONFIG_TPL_BUILD) || defined(CONFIG_TPL_DM_SERIAL)

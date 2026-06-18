@@ -10,13 +10,12 @@
 #include <log.h>
 #include <malloc.h>
 #include <asm/eth.h>
-#include <asm/global_data.h>
 #include <asm/test.h>
 #include <asm/types.h>
 
 /*
  * Structure definitions for network protocols. Since this file is used for
- * both NET and NET_LWIP, and given that the two network stacks do have
+ * both NET_LEGACY and NET_LWIP, and given that the two network stacks do have
  * conflicting types (for instance struct icmp_hdr), it is on purpose that the
  * structures are defined locally with minimal dependencies -- <asm/types.h> is
  * included for the bit types and that's it.
@@ -83,8 +82,6 @@ struct icmphdr {
 #define ICMP_ECHO_REQUEST	8
 #define ICMP_ECHO_REPLY		0
 #define IPPROTO_ICMP		1
-
-DECLARE_GLOBAL_DATA_PTR;
 
 static const u8 null_ethaddr[6];
 static bool skip_timeout;

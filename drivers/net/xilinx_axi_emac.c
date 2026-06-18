@@ -15,7 +15,6 @@
 #include <log.h>
 #include <net.h>
 #include <malloc.h>
-#include <asm/global_data.h>
 #include <asm/io.h>
 #include <phy.h>
 #include <miiphy.h>
@@ -23,13 +22,15 @@
 #include <linux/delay.h>
 #include <eth_phy.h>
 
-DECLARE_GLOBAL_DATA_PTR;
-
 /* Link setup */
 #define XAE_EMMC_LINKSPEED_MASK	0xC0000000 /* Link speed */
 #define XAE_EMMC_LINKSPD_10	0x00000000 /* Link Speed mask for 10 Mbit */
 #define XAE_EMMC_LINKSPD_100	0x40000000 /* Link Speed mask for 100 Mbit */
 #define XAE_EMMC_LINKSPD_1000	0x80000000 /* Link Speed mask for 1000 Mbit */
+
+/* Reset and Address Filter (RAF) Register bit definitions */
+#define XAE_RAF_MCSTREJ_MASK	0x00000002 /* Reject rx multicast dst addr */
+#define XAE_RAF_BCSTREJ_MASK	0x00000004 /* Reject rx broadcast dst addr */
 
 /* Interrupt Status/Enable/Mask Registers bit definitions */
 #define XAE_INT_RXRJECT_MASK	0x00000008 /* Rx frame rejected */
@@ -156,7 +157,8 @@ static struct axidma_bd tx_bd __attribute((aligned(DMAALIGN)));
 static struct axidma_bd rx_bd __attribute((aligned(DMAALIGN)));
 
 struct axi_regs {
-	u32 reserved[3];
+	u32 raf; /* 0x0: Reset and Address Filter */
+	u32 reserved[2];
 	u32 is; /* 0xC: Interrupt status */
 	u32 reserved2;
 	u32 ie; /* 0x14: Interrupt enable */
@@ -530,6 +532,19 @@ static int axi_ethernet_init(struct axidma_priv *priv)
 	/* Setup HW */
 	/* Set default MDIO divisor */
 	writel(XAE_MDIO_DIV_DFT | XAE_MDIO_MC_MDIOEN_MASK, &regs->mdio_mc);
+
+	/*
+	 * Reject broadcast and multicast frames at MAC level to reduce
+	 * unnecessary traffic processing. Multicast rejection is only
+	 * enabled when IPv6 is not configured because IPv6 Neighbor
+	 * Discovery and DHCPv6 rely on multicast.
+	 */
+	if (!IS_ENABLED(CONFIG_IPV6))
+		writel(readl(&regs->raf) | XAE_RAF_MCSTREJ_MASK |
+		       XAE_RAF_BCSTREJ_MASK, &regs->raf);
+	else
+		writel(readl(&regs->raf) | XAE_RAF_BCSTREJ_MASK,
+		       &regs->raf);
 
 	debug("axiemac: InitHw done\n");
 	return 0;

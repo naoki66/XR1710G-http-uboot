@@ -19,8 +19,8 @@
 #include <linux/delay.h>
 #include <net/tftp.h>
 #include "bootp.h"
-#ifdef CONFIG_LED_STATUS
-#include <status_led.h>
+#if IS_ENABLED(CONFIG_LED_BOOT)
+#include <led.h>
 #endif
 #ifdef CONFIG_BOOTP_RANDOM_DELAY
 #include "net_rand.h"
@@ -87,23 +87,6 @@ static u8 dhcp_option_overload;
 #define OVERLOAD_SNAME 2
 static void dhcp_handler(uchar *pkt, unsigned dest, struct in_addr sip,
 			unsigned src, unsigned len);
-
-/* For Debug */
-#if 0
-static char *dhcpmsg2str(int type)
-{
-	switch (type) {
-	case 1:	 return "DHCPDISCOVER"; break;
-	case 2:	 return "DHCPOFFER";	break;
-	case 3:	 return "DHCPREQUEST";	break;
-	case 4:	 return "DHCPDECLINE";	break;
-	case 5:	 return "DHCPACK";	break;
-	case 6:	 return "DHCPNACK";	break;
-	case 7:	 return "DHCPRELEASE";	break;
-	default: return "UNKNOWN/INVALID MSG TYPE"; break;
-	}
-}
-#endif
 #endif
 
 static void bootp_add_id(ulong id)
@@ -396,8 +379,8 @@ static void bootp_handler(uchar *pkt, unsigned dest, struct in_addr sip,
 	/*
 	 *	Got a good BOOTP reply.	 Copy the data into our variables.
 	 */
-#if defined(CONFIG_LED_STATUS) && defined(CONFIG_LED_STATUS_BOOT_ENABLE)
-	status_led_set(CONFIG_LED_STATUS_BOOT, CONFIG_LED_STATUS_OFF);
+#if IS_ENABLED(CONFIG_LED_BOOT)
+	led_boot_off();
 #endif
 
 	store_net_params(bp);		/* Store net parameters from reply */
@@ -1014,13 +997,13 @@ static void dhcp_packet_process_options(struct bootp_hdr *bp)
 	}
 }
 
-static int dhcp_message_type(unsigned char *popt)
+static int dhcp_message_type(unsigned char *popt, unsigned char *end)
 {
 	if (net_read_u32((u32 *)popt) != htonl(BOOTP_VENDOR_MAGIC))
 		return -1;
 
 	popt += 4;
-	while (*popt != 0xff) {
+	while (popt < end && *popt != 0xff) {
 		if (*popt == 53)	/* DHCP Message Type */
 			return *(popt + 2);
 		if (*popt == 0)	{
@@ -1137,7 +1120,7 @@ static void dhcp_handler(uchar *pkt, unsigned dest, struct in_addr sip,
 			    strlen(CONFIG_SYS_BOOTFILE_PREFIX)) == 0) {
 #endif	/* CONFIG_SYS_BOOTFILE_PREFIX */
 			if (CONFIG_IS_ENABLED(UNIT_TEST) &&
-			    dhcp_message_type((u8 *)bp->bp_vend) == -1) {
+			    dhcp_message_type((u8 *)bp->bp_vend, (u8 *)pkt + len) == -1) {
 				debug("got BOOTP response; transitioning to BOUND\n");
 				goto dhcp_got_bootp;
 			}
@@ -1166,7 +1149,7 @@ static void dhcp_handler(uchar *pkt, unsigned dest, struct in_addr sip,
 	case REQUESTING:
 		debug("DHCP State: REQUESTING\n");
 
-		if (dhcp_message_type((u8 *)bp->bp_vend) == DHCP_ACK) {
+		if (dhcp_message_type((u8 *)bp->bp_vend, (u8 *)pkt + len) == DHCP_ACK) {
 dhcp_got_bootp:
 			dhcp_packet_process_options(bp);
 			/* Store net params from reply */

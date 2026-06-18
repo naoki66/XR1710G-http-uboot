@@ -669,23 +669,6 @@ static int boot_from_devices(struct spl_image_info *spl_image,
 	return ret;
 }
 
-#if defined(CONFIG_SPL_FRAMEWORK_BOARD_INIT_F)
-void board_init_f(ulong dummy)
-{
-	if (CONFIG_IS_ENABLED(OF_CONTROL)) {
-		int ret;
-
-		ret = spl_early_init();
-		if (ret) {
-			debug("spl_early_init() failed: %d\n", ret);
-			hang();
-		}
-	}
-
-	preloader_console_init();
-}
-#endif
-
 void board_init_r(gd_t *dummy1, ulong dummy2)
 {
 	u32 spl_boot_list[] = {
@@ -954,7 +937,7 @@ ulong spl_relocate_stack_gd(void)
 	}
 #endif
 	/* Get stack position: use 8-byte alignment for ABI compliance */
-	ptr = CONFIG_SPL_STACK_R_ADDR - roundup(sizeof(gd_t),16);
+	ptr -= roundup(sizeof(gd_t), 16);
 	gd->start_addr_sp = ptr;
 	new_gd = (gd_t *)ptr;
 	memcpy(new_gd, (void *)gd, sizeof(gd_t));

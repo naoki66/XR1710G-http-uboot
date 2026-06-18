@@ -141,6 +141,22 @@
 
 &aips3 {
 	bootph-all;
+
+	xspi1: spi@42b90000 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		compatible = "nxp,imx94-xspi";
+		reg = <0x42b90000 0x50000>, <0x28000000 0x08000000>;
+		reg-names = "xspi_base", "xspi_mmap";
+		interrupts = <GIC_SPI 390 IRQ_TYPE_LEVEL_HIGH>,       // EENV0
+			     <GIC_SPI 391 IRQ_TYPE_LEVEL_HIGH>,	      // EENV1
+			     <GIC_SPI 392 IRQ_TYPE_LEVEL_HIGH>,       // EENV2
+			     <GIC_SPI 393 IRQ_TYPE_LEVEL_HIGH>,       // EENV3
+			     <GIC_SPI 394 IRQ_TYPE_LEVEL_HIGH>;       // EENV4
+		clocks = <&scmi_clk IMX94_CLK_XSPI1>;
+		clock-names = "xspi";
+		status = "disabled";
+	};
 };
 
 &clk_ext1 {
@@ -323,12 +339,6 @@
 				};
 			};
 
-			netc_timer0: ethernet@0,1 {
-				compatible = "pci1131,ee02";
-				reg = <0x100 0 0 0 0>;
-				status = "disabled";
-			};
-
 			netc_switch: ethernet-switch@0,2 {
 				compatible = "pci1131,eef2", "nxp,imx943-netc-switch";
 				reg = <0x200 0 0 0 0>;
@@ -392,12 +402,6 @@
 				status = "disabled";
 			};
 
-			netc_timer1: ethernet@0,1 {
-				compatible = "pci1131,ee02";
-				reg = <0x10100 0 0 0 0>;
-				status = "disabled";
-			};
-
 			enetc1: ethernet@8,0 {
 				compatible = "pci1131,e101";
 				reg = <0x14000 0 0 0 0>;
@@ -407,12 +411,6 @@
 			enetc2: ethernet@10,0 {
 				compatible = "pci1131,e101";
 				reg = <0x18000 0 0 0 0>;
-				status = "disabled";
-			};
-
-			netc_timer2: ethernet@10,1 {
-				compatible = "pci1131,ee02";
-				reg = <0x18100 0 0 0 0>;
 				status = "disabled";
 			};
 

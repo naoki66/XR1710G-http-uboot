@@ -20,7 +20,7 @@ config APPLE_PMGR_POWER_DOMAIN
 
 config AGILEX5_PMGR_POWER_DOMAIN
 	bool "Enable the Agilex5 PMGR power domain driver"
-	depends on SPL_POWER_DOMAIN && TARGET_SOCFPGA_SOC64
+	depends on SPL_POWER_DOMAIN && ARCH_SOCFPGA_SOC64
 	help
 	  Enable support for power gating peripherals' SRAM specified in
 	  the handoff data values obtained from the bitstream to reduce
@@ -89,6 +89,22 @@ config MESON_SECURE_POWER_DOMAIN
 	help
 	  Enable support for manipulating Amlogic Meson Secure power domains.
 	  Support for Amlogic A1 series.
+
+config QCOM_RPMH_POWER_DOMAIN
+	bool "Enable the QCOM RPMH Power domain driver"
+	depends on POWER_DOMAIN && ARCH_SNAPDRAGON
+	help
+	  Generic RPMH power domain implementation for QCOM devices.
+	  The RPMH power domain driver is responsible for managing power
+	  domains on Qualcomm SoCs.
+
+config RENESAS_R8A78000_POWER_DOMAIN
+	bool "Enable the Renesas R-Car MDLC Power domain and reset driver"
+	depends on POWER_DOMAIN && ARCH_RENESAS
+	help
+	  Enable support for Renesas R-Car R8A78000 X5H MDLC Power domain
+	  and reset driver. The MDLC is responsible for managing both
+	  power domains and resets on R-Car R8A78000 X5H SoC.
 
 config SANDBOX_POWER_DOMAIN
 	bool "Enable the sandbox power domain test driver"

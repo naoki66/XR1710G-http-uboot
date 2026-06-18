@@ -16,6 +16,9 @@
 *.dtb
 *.dtbo
 *.dtb.S
+*.dtb.clean.dts
+*.dtb.diff
+*.dtb.full.dts
 *.elf
 *.exe
 *.fit
@@ -80,7 +83,7 @@ fit-dtb.blob*
 /*imx8mimage*
 /*imx8mcst*
 /*rcar4-sa0*
-/drivers/video/u_boot_logo.S
+/drivers/video/u_boot_logo.bmp.S
 /test/fdt_overlay/test-fdt-overlay-stacked.dtbo.S
 /test/fdt_overlay/test-fdt-overlay.dtbo.S
 capsule_esl_file
