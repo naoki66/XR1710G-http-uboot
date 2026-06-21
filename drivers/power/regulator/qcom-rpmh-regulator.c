@@ -295,57 +295,6 @@ static int rpmh_regulator_vrm_get_value(struct udevice *rdev)
 	return vreg->uv;
 }
 
-static int rpmh_regulator_is_enabled(struct udevice *rdev)
-{
-	struct rpmh_vreg *vreg = dev_get_priv(rdev);
-	int ret;
-
-	debug("%s: is_enabled %d\n", rdev->name, vreg->enabled);
-
-	if (vreg->enabled < 0) {
-		struct tcs_cmd cmd = {
-			.addr = vreg->addr + RPMH_REGULATOR_REG_ENABLE,
-		};
-		ret = rpmh_regulator_read_data(vreg, &cmd);
-		/*
-		 * Don't override if disabled since we will also vote the right voltage
-		 * while enabling
-		 */
-		if (!ret && cmd.data)
-			vreg->enabled = cmd.data & RPMH_REGULATOR_ENABLE_MASK;
-	}
-
-	return vreg->enabled > 0;
-}
-
-static int rpmh_regulator_set_enable_state(struct udevice *rdev,
-					   bool enable)
-{
-	struct rpmh_vreg *vreg = dev_get_priv(rdev);
-	struct tcs_cmd cmd = {
-		.addr = vreg->addr + RPMH_REGULATOR_REG_ENABLE,
-		.data = enable,
-	};
-	int ret;
-
-	debug("%s: set_enable %d (current %d)\n", rdev->name, enable,
-	      vreg->enabled);
-
-	if (vreg->enabled == -EINVAL &&
-	    vreg->uv != -ENOTRECOVERABLE) {
-		ret = _rpmh_regulator_vrm_set_value(rdev,
-						    vreg->uv, true);
-		if (ret < 0)
-			return ret;
-	}
-
-	ret = rpmh_regulator_send_request(vreg, &cmd, enable);
-	if (!ret)
-		vreg->enabled = enable;
-
-	return ret;
-}
-
 static int rpmh_regulator_vrm_set_mode_bypass(struct rpmh_vreg *vreg,
 					      unsigned int mode, bool bypassed)
 {
@@ -392,6 +341,63 @@ static int rpmh_regulator_vrm_set_mode(struct udevice *rdev,
 	ret = rpmh_regulator_vrm_set_mode_bypass(vreg, mode, vreg->bypassed);
 	if (!ret)
 		vreg->mode = mode;
+
+	return ret;
+}
+
+static int rpmh_regulator_is_enabled(struct udevice *rdev)
+{
+	struct rpmh_vreg *vreg = dev_get_priv(rdev);
+	int ret;
+
+	debug("%s: is_enabled %d\n", rdev->name, vreg->enabled);
+
+	if (vreg->enabled < 0) {
+		struct tcs_cmd cmd = {
+			.addr = vreg->addr + RPMH_REGULATOR_REG_ENABLE,
+		};
+		ret = rpmh_regulator_read_data(vreg, &cmd);
+		/*
+		 * Don't override if disabled since we will also vote the right voltage
+		 * while enabling
+		 */
+		if (!ret && cmd.data)
+			vreg->enabled = cmd.data & RPMH_REGULATOR_ENABLE_MASK;
+	}
+
+	return vreg->enabled > 0;
+}
+
+static int rpmh_regulator_set_enable_state(struct udevice *rdev,
+					   bool enable)
+{
+	struct rpmh_vreg *vreg = dev_get_priv(rdev);
+	struct tcs_cmd cmd = {
+		.addr = vreg->addr + RPMH_REGULATOR_REG_ENABLE,
+		.data = enable,
+	};
+	int ret;
+
+	debug("%s: set_enable %d (current %d)\n", rdev->name, enable,
+	      vreg->enabled);
+
+	if (vreg->mode != -EINVAL) {
+		ret = rpmh_regulator_vrm_set_mode_bypass(vreg, vreg->mode, vreg->bypassed);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (vreg->enabled == -EINVAL &&
+	    vreg->uv != -ENOTRECOVERABLE) {
+		ret = _rpmh_regulator_vrm_set_value(rdev,
+						    vreg->uv, true);
+		if (ret < 0)
+			return ret;
+	}
+
+	ret = rpmh_regulator_send_request(vreg, &cmd, enable);
+	if (!ret)
+		vreg->enabled = enable;
 
 	return ret;
 }
@@ -637,6 +643,35 @@ static const struct rpmh_vreg_init_data pm6150l_vreg_data[] = {
 	RPMH_VREG("ldo10",  "ldo%s10", &pmic5_pldo,      "vdd-l9-l10"),
 	RPMH_VREG("ldo11",  "ldo%s11", &pmic5_pldo,      "vdd-l7-l11"),
 	RPMH_VREG("bob",    "bob%s1",  &pmic5_bob,       "vdd-bob"),
+	{}
+};
+
+static const struct rpmh_vreg_init_data pm7550_vreg_data[] = {
+	/* smps1 - smps6 are not added to u-boot yet */
+	RPMH_VREG("ldo1",  "ldo%s1",  &pmic5_nldo515,      "vdd-l1"),
+	RPMH_VREG("ldo2",  "ldo%s2",  &pmic5_nldo515,      "vdd-l2-l3"),
+	RPMH_VREG("ldo3",  "ldo%s3",  &pmic5_nldo515,      "vdd-l2-l3"),
+	RPMH_VREG("ldo4",  "ldo%s4",  &pmic5_nldo515,      "vdd-l4-l5"),
+	RPMH_VREG("ldo5",  "ldo%s5",  &pmic5_nldo515,      "vdd-l4-l5"),
+	RPMH_VREG("ldo6",  "ldo%s6",  &pmic5_nldo515,      "vdd-l6"),
+	RPMH_VREG("ldo7",  "ldo%s7",  &pmic5_nldo515,      "vdd-l7"),
+	RPMH_VREG("ldo8",  "ldo%s8",  &pmic5_nldo515,      "vdd-l8"),
+	RPMH_VREG("ldo9",  "ldo%s9",  &pmic5_nldo515,      "vdd-l9-l10"),
+	RPMH_VREG("ldo10", "ldo%s10", &pmic5_nldo515,      "vdd-l9-l10"),
+	RPMH_VREG("ldo11", "ldo%s11", &pmic5_nldo515,      "vdd-l11"),
+	RPMH_VREG("ldo12", "ldo%s12", &pmic5_pldo515_mv,   "vdd-l12-l14"),
+	RPMH_VREG("ldo13", "ldo%s13", &pmic5_pldo515_mv,   "vdd-l13-l16"),
+	RPMH_VREG("ldo14", "ldo%s14", &pmic5_pldo,         "vdd-l12-l14"),
+	RPMH_VREG("ldo15", "ldo%s15", &pmic5_pldo,         "vdd-l15-l17-l18-l19-l20-l21-l22-l23"),
+	RPMH_VREG("ldo16", "ldo%s16", &pmic5_pldo,         "vdd-l13-l16"),
+	RPMH_VREG("ldo17", "ldo%s17", &pmic5_pldo,         "vdd-l15-l17-l18-l19-l20-l21-l22-l23"),
+	RPMH_VREG("ldo18", "ldo%s18", &pmic5_pldo,         "vdd-l15-l17-l18-l19-l20-l21-l22-l23"),
+	RPMH_VREG("ldo19", "ldo%s19", &pmic5_pldo,         "vdd-l15-l17-l18-l19-l20-l21-l22-l23"),
+	RPMH_VREG("ldo20", "ldo%s20", &pmic5_pldo,         "vdd-l15-l17-l18-l19-l20-l21-l22-l23"),
+	RPMH_VREG("ldo21", "ldo%s21", &pmic5_pldo,         "vdd-l15-l17-l18-l19-l20-l21-l22-l23"),
+	RPMH_VREG("ldo22", "ldo%s22", &pmic5_pldo,         "vdd-l15-l17-l18-l19-l20-l21-l22-l23"),
+	RPMH_VREG("ldo23", "ldo%s23", &pmic5_pldo,         "vdd-l15-l17-l18-l19-l20-l21-l22-l23"),
+	RPMH_VREG("bob",   "bob%s1",  &pmic5_bob,          "vdd-bob"),
 	{}
 };
 
@@ -945,6 +980,10 @@ static const struct udevice_id rpmh_regulator_ids[] = {
 	{
 		.compatible = "qcom,pm7325-rpmh-regulators",
 		.data = (ulong)pm7325_vreg_data,
+	},
+	{
+		.compatible = "qcom,pm7550-rpmh-regulators",
+		.data = (ulong)pm7550_vreg_data,
 	},
 	{
 		.compatible = "qcom,pm8150-rpmh-regulators",

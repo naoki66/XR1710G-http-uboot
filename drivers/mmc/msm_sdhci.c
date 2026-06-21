@@ -13,7 +13,6 @@
 #include <reset.h>
 #include <sdhci.h>
 #include <wait_bit.h>
-#include <asm/global_data.h>
 #include <asm/io.h>
 #include <linux/bitops.h>
 #include <power/regulator.h>
@@ -61,8 +60,6 @@ struct msm_sdhc_variant_info {
 	u32 core_vendor_spec_capabilities0;
 };
 
-DECLARE_GLOBAL_DATA_PTR;
-
 static int msm_sdc_clk_init(struct udevice *dev)
 {
 	struct msm_sdhc *prv = dev_get_priv(dev);
@@ -74,8 +71,7 @@ static int msm_sdc_clk_init(struct udevice *dev)
 
 	var_info = (void *)dev_get_driver_data(dev);
 
-	ret = ofnode_read_u32(node, "clock-frequency", (uint *)(&clk_rate));
-	if (ret)
+	if (ofnode_read_u32(node, "max-frequency", (uint *)(&clk_rate)))
 		clk_rate = 201500000;
 
 	ret = clk_get_bulk(dev, &prv->clks);

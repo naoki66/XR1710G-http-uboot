@@ -8,7 +8,6 @@
 #include <asm/arch/imx8mp_pins.h>
 #include <asm/arch/sys_proto.h>
 #include <asm-generic/gpio.h>
-#include <asm/global_data.h>
 #include <asm/mach-imx/gpio.h>
 #include <asm/mach-imx/iomux-v3.h>
 #include <errno.h>
@@ -20,8 +19,6 @@
 #include <netdev.h>
 
 #include "../common/tdx-cfg-block.h"
-
-DECLARE_GLOBAL_DATA_PTR;
 
 #define UART_PAD_CTRL	(PAD_CTL_DSE6 | PAD_CTL_FSEL1)
 
@@ -49,7 +46,7 @@ static void setup_fec(void)
 	setbits_le32(&gpr->gpr[1], BIT(22));
 }
 
-#if IS_ENABLED(CONFIG_NET)
+#if IS_ENABLED(CONFIG_NET_LEGACY)
 int board_phy_config(struct phy_device *phydev)
 {
 	if (phydev->drv->config)

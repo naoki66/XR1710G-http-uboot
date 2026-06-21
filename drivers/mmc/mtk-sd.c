@@ -539,7 +539,7 @@ static bool msdc_cmd_is_ready(struct msdc_host *host)
 		return false;
 	}
 
-	if (host->last_resp_type == MMC_RSP_R1b && host->last_data_write) {
+	if (host->last_resp_type == MMC_RSP_R1b || host->last_data_write) {
 		ret = readl_poll_timeout(&host->base->msdc_ps, reg,
 					 reg & MSDC_PS_DAT0, 1000000);
 
@@ -1979,6 +1979,18 @@ static const struct msdc_compatible mt8183_compat = {
 	.use_dma_mode = true,
 };
 
+static const struct msdc_compatible mt8189_compat = {
+	.clk_div_bits = 12,
+	.pad_tune0 = true,
+	.async_fifo = true,
+	.async_fifo_crcsts = true,
+	.data_tune = true,
+	.busy_check = true,
+	.stop_clk_fix = true,
+	.enhance_rx = true,
+	.use_dma_mode = true,
+};
+
 static const struct udevice_id msdc_ids[] = {
 	{ .compatible = "mediatek,mt7620-mmc", .data = (ulong)&mt7620_compat },
 	{ .compatible = "mediatek,mt7621-mmc", .data = (ulong)&mt7621_compat },
@@ -1990,6 +2002,7 @@ static const struct udevice_id msdc_ids[] = {
 	{ .compatible = "mediatek,mt8512-mmc", .data = (ulong)&mt8512_compat },
 	{ .compatible = "mediatek,mt8516-mmc", .data = (ulong)&mt8516_compat },
 	{ .compatible = "mediatek,mt8183-mmc", .data = (ulong)&mt8183_compat },
+	{ .compatible = "mediatek,mt8189-mmc", .data = (ulong)&mt8189_compat },
 	{}
 };
 

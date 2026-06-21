@@ -77,11 +77,13 @@ struct dm_spi_bus {
  * @cs:		Chip select number (0..n-1)
  * @max_hz:	Maximum bus speed that this slave can tolerate
  * @mode:	SPI mode to use for this device (see SPI mode flags)
+ * @wordlen:	Word length in bits to use for this device
  */
 struct dm_spi_slave_plat {
 	unsigned int cs[SPI_CS_CNT_MAX];
 	uint max_hz;
 	uint mode;
+	unsigned int wordlen;
 };
 
 /**
@@ -658,17 +660,6 @@ int spi_chip_select(struct udevice *slave);
 int spi_find_chip_select(struct udevice *bus, int cs, struct udevice **devp);
 
 /**
- * spi_slave_of_to_plat() - decode standard SPI platform data
- *
- * This decodes the speed and mode for a slave from a device tree node
- *
- * @blob:	Device tree blob
- * @node:	Node offset to read from
- * @plat:	Place to put the decoded information
- */
-int spi_slave_of_to_plat(struct udevice *dev, struct dm_spi_slave_plat *plat);
-
-/**
  * spi_cs_info() - Check information on a chip select
  *
  * This checks a particular chip select on a bus to see if it has a device
@@ -728,6 +719,18 @@ int dm_spi_claim_bus(struct udevice *dev);
  * @slave:	The SPI slave device
  */
 void dm_spi_release_bus(struct udevice *dev);
+
+/**
+ * Set the word length for SPI transactions
+ *
+ * Set the word length (number of bits per word) for SPI transactions.
+ *
+ * @slave:	The SPI slave
+ * @wordlen:	The number of bits in a word
+ *
+ * Returns: 0 on success, -1 on failure.
+ */
+int dm_spi_set_wordlen(struct udevice *dev, unsigned int wordlen);
 
 /**
  * SPI transfer

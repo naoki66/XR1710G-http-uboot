@@ -26,7 +26,6 @@
 #include <fdt_support.h>
 #include <reset.h>
 #include <wait_bit.h>
-#include <asm/global_data.h>
 #include <dm/device_compat.h>
 #include <linux/bitops.h>
 
@@ -34,8 +33,6 @@
 #include <asm/io.h>
 
 #include <linux/iopoll.h>
-
-DECLARE_GLOBAL_DATA_PTR;
 
 /* sun4i spi registers */
 #define SUN4I_RXDATA_REG		0x00
@@ -347,7 +344,7 @@ static int sun4i_spi_xfer(struct udevice *dev, unsigned int bitlen,
 	struct sun4i_spi_priv *priv = dev_get_priv(bus);
 	struct dm_spi_slave_plat *slave_plat = dev_get_parent_plat(dev);
 
-	u32 len = bitlen / 8;
+	u32 rst, val, len = bitlen / 8;
 	u8 nbytes;
 	int ret;
 
@@ -363,8 +360,11 @@ static int sun4i_spi_xfer(struct udevice *dev, unsigned int bitlen,
 		sun4i_spi_set_cs(bus, slave_plat->cs[0], true);
 
 	/* Reset FIFOs */
-	setbits_le32(SPI_REG(priv, SPI_FCR), SPI_BIT(priv, SPI_FCR_RF_RST) |
-		     SPI_BIT(priv, SPI_FCR_TF_RST));
+	rst = SPI_BIT(priv, SPI_FCR_RF_RST) | SPI_BIT(priv, SPI_FCR_TF_RST);
+	setbits_le32(SPI_REG(priv, SPI_FCR), rst);
+	ret = readl_poll_timeout(SPI_REG(priv, SPI_FCR), val, !(rst & val), 20);
+	if (ret)
+		return -EBUSY;
 
 	while (len) {
 		/* Setup the transfer now... */

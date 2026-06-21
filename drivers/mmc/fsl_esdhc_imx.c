@@ -752,10 +752,11 @@ static int esdhc_set_voltage(struct mmc *mmc)
 	int ret;
 
 	priv->signal_voltage = mmc->signal_voltage;
+	if (priv->vs18_enable)
+		return -ENOTSUPP;
+
 	switch (mmc->signal_voltage) {
 	case MMC_SIGNAL_VOLTAGE_330:
-		if (priv->vs18_enable)
-			return -ENOTSUPP;
 		if (CONFIG_IS_ENABLED(DM_REGULATOR) &&
 		    !IS_ERR_OR_NULL(priv->vqmmc_dev)) {
 			ret = regulator_set_value(priv->vqmmc_dev,
@@ -1685,7 +1686,7 @@ static int fsl_esdhc_bind(struct udevice *dev)
 	return mmc_bind(dev, &plat->mmc, &plat->cfg);
 }
 
-U_BOOT_DRIVER(fsl_esdhc) = {
+U_BOOT_DRIVER(fsl_esdhc_imx) = {
 	.name	= "fsl_esdhc",
 	.id	= UCLASS_MMC,
 	.of_match = fsl_esdhc_ids,

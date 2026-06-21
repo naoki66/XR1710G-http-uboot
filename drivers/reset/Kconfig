@@ -64,6 +64,22 @@ config RESET_BCM6345
 	help
 	  Support reset controller on BCM6345.
 
+config RESET_BRCMSTB
+	depends on ARCH_BCM283X
+	bool "Generic Reset controller driver for Broadcom"
+	help
+	  This enables reset controller for Broadcom devices.
+	  If you wish to use reset resources managed by the Broadcom
+	  Reset Controller, say Y here. Otherwise, say N.
+
+config RESET_BRCMSTB_RESCAL
+	depends on ARCH_BCM283X
+	bool "Generic Rescal Reset controller driver for Broadcom"
+	help
+	  Support rescal reset controller on Broadcom.
+	  If you wish to use reset resources managed by the Broadcom
+	  Reset Controller, say Y here. Otherwise, say N.
+
 config RESET_UNIPHIER
 	bool "Reset controller driver for UniPhier SoCs"
 	depends on ARCH_UNIPHIER
@@ -99,6 +115,15 @@ config RESET_ROCKCHIP
 	  Support for reset controller on rockchip SoC. The main limitation
 	  though is that some reset signals, like I2C or MISC reset multiple
 	  devices.
+
+config SPL_RESET_ROCKCHIP
+	bool "SPL reset controller driver for Rockchip SoCs"
+	depends on SPL_DM_RESET && ARCH_ROCKCHIP && SPL_CLK
+	default y
+	help
+	  Support for the reset controller on Rockchip SoCs in SPL. Select this
+	  if you observe any reset-related warnings or errors when booting SPL,
+	  such as when using UFS storage
 
 config RESET_HSDK
 	bool "Synopsys HSDK Reset Driver"
@@ -208,7 +233,7 @@ config RESET_RASPBERRYPI
 
 config RESET_SCMI
 	bool "Enable SCMI reset domain driver"
-	select SCMI_FIRMWARE
+	depends on SCMI_FIRMWARE
 	help
 	  Enable this option if you want to support reset controller
 	  devices exposed by a SCMI agent based on SCMI reset domain
@@ -239,8 +264,7 @@ config RESET_AT91
 
 config RESET_RZG2L_USBPHY_CTRL
 	bool "Enable support for Renesas RZ/G2L USB 2.0 PHY control"
-	depends on DM_RESET
-	select REGULATOR_RZG2L_USBPHY
+	depends on DM_RESET && REGULATOR_RZG2L_USBPHY
 	help
 	  Enable support for controlling USB 2.0 PHY resets on the Renesas
 	  RZ/G2L SoC. This is required for USB 2.0 functionality to work on this

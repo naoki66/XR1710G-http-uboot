@@ -326,8 +326,8 @@ static int adc_measurement(ofnode node, int adc_count, int *min_uV, int *max_uV)
 static int board_check_usb_power(void)
 {
 	ofnode node;
-	int max_uV = 0;
-	int min_uV = USB_START_HIGH_THRESHOLD_UV;
+	int max_uV;
+	int min_uV;
 	int adc_count, ret;
 	u32 nb_blink;
 	u8 i;
@@ -358,6 +358,9 @@ static int board_check_usb_power(void)
 
 	/* perform maximum of 2 ADC measurements to detect power supply current */
 	for (i = 0; i < 2; i++) {
+		max_uV = 0;
+		min_uV = USB_START_HIGH_THRESHOLD_UV;
+
 		ret = adc_measurement(node, adc_count, &min_uV, &max_uV);
 		if (ret)
 			return ret;
@@ -834,24 +837,3 @@ static void board_copro_image_process(ulong fw_image, size_t fw_size)
 }
 
 U_BOOT_FIT_LOADABLE_HANDLER(IH_TYPE_COPRO, board_copro_image_process);
-
-#if defined(CONFIG_FWU_MULTI_BANK_UPDATE)
-
-#include <fwu.h>
-
-/**
- * fwu_plat_get_bootidx() - Get the value of the boot index
- * @boot_idx: Boot index value
- *
- * Get the value of the bank(partition) from which the platform
- * has booted. This value is passed to U-Boot from the earlier
- * stage bootloader which loads and boots all the relevant
- * firmware images
- *
- */
-void fwu_plat_get_bootidx(uint *boot_idx)
-{
-	*boot_idx = (readl(TAMP_FWU_BOOT_INFO_REG) >>
-		    TAMP_FWU_BOOT_IDX_OFFSET) & TAMP_FWU_BOOT_IDX_MASK;
-}
-#endif /* CONFIG_FWU_MULTI_BANK_UPDATE */
