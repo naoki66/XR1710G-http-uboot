@@ -126,6 +126,7 @@ void clk_bcr_update(phys_addr_t apps_cmd_rcgr)
 #define CFG_MODE_MASK		(0x3 << CFG_MODE_SHIFT)
 #define CFG_MODE_DUAL_EDGE	(0x2 << CFG_MODE_SHIFT)
 #define CFG_HW_CLK_CTRL_MASK	BIT(20)
+#define CFG_MASK		0x3fff
 
 /*
  * root set rate for clocks with half integer and MND divider
@@ -166,6 +167,28 @@ void clk_rcg_set_rate_mnd(phys_addr_t base, uint32_t cmd_rcgr,
 	writel(cfg, base + cmd_rcgr + RCG_CFG_REG); /* Write new clock configuration */
 
 	/* Inform h/w to start using the new config. */
+	clk_bcr_update(base + cmd_rcgr);
+}
+
+/* root set rate for clocks without the MND divider and with optional CDIVR */
+void clk_rcg_set_rate_v2(phys_addr_t base, uint32_t cmd_rcgr,
+			 uint32_t div_cdivr, int div, int cdiv,
+			 int source)
+{
+	u32 cfg;
+
+	cfg = readl(base + cmd_rcgr + RCG_CFG_REG);
+	cfg &= ~CFG_MASK;
+	cfg |= source & CFG_CLK_SRC_MASK;
+
+	if (div)
+		cfg |= div & CFG_SRC_DIV_MASK;
+
+	writel(cfg, base + cmd_rcgr + RCG_CFG_REG);
+
+	if (div_cdivr)
+		writel(cdiv, base + div_cdivr);
+
 	clk_bcr_update(base + cmd_rcgr);
 }
 
