@@ -115,6 +115,17 @@ struct udevice *eth_get_dev(void)
 	return uc_priv->current;
 }
 
+struct udevice *eth_get_current(void)
+{
+	struct eth_uclass_priv *uc_priv;
+
+	uc_priv = eth_get_uclass_priv();
+	if (!uc_priv)
+		return NULL;
+
+	return uc_priv->current;
+}
+
 /*
  * Typically this will just store a device pointer.
  * In case it was not probed, we will attempt to do so.

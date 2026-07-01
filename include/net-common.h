@@ -182,6 +182,7 @@ unsigned add_ip_checksums(unsigned offset, unsigned sum, unsigned int new_sum);
  * or it can be an alias of the form "eth%d"
  */
 struct udevice *eth_get_dev_by_name(const char *devname);
+struct udevice *eth_get_current(void); /* get current device without probing */
 int eth_is_active(struct udevice *dev); /* Test device for active state */
 
 /*

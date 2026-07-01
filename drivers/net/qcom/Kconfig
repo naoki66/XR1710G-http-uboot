@@ -1,0 +1,32 @@
+config QCOM_NSS_SWITCH
+	bool "Qualcomm IPQ NSS/PPE Ethernet support"
+	depends on DM
+	select PHYLIB
+	select DM_ETH
+	select DM_MDIO
+	select REGMAP
+	select SYSCON
+	help
+	  Enable the NSS/PPE Ethernet datapath used by Qualcomm IPQ SoCs.
+
+config ETH_IPQ9574
+	bool "Qualcomm IPQ9574 NSS/PPE Ethernet support"
+	depends on QCOM_NSS_SWITCH && ARCH_SNAPDRAGON
+	default y if QCOM_NSS_SWITCH
+	help
+	  Enable IPQ9574-specific port, clock and PPE setup.
+
+config ETH_LOW_MEM
+	bool "Use small descriptor rings for Qualcomm IPQ Ethernet"
+	depends on QCOM_NSS_SWITCH
+	default n
+
+config ETH_MAX_MAC
+	int "Maximum Qualcomm IPQ Ethernet MAC ports"
+	depends on QCOM_NSS_SWITCH
+	default 6
+
+config ETH_MAX_UNIPHY
+	int "Maximum Qualcomm IPQ UNIPHY blocks"
+	depends on QCOM_NSS_SWITCH
+	default 3

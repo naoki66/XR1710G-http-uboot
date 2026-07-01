@@ -167,6 +167,7 @@ config BCMGENET
 	  This driver supports the BCMGENET Ethernet MAC.
 
 source "drivers/net/bnxt/Kconfig"
+source "drivers/net/qcom/Kconfig"
 
 config CORTINA_NI_ENET
 	bool "Cortina-Access Ethernet driver"
