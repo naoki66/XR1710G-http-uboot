@@ -1,0 +1,9 @@
+/dts-v1/;
+
+/ {
+	compatible = "askey,sbe1v1k-chainloader-control";
+	fit-base = <0x80000000>;
+	payload-node = "uboot-1";
+	fallback-payload-load = <0x4a240000>;
+	fallback-payload-entry = <0x4a240000>;
+};
