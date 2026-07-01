@@ -6,23 +6,33 @@
 
 #include <dm.h>
 #include <dm/ofnode.h>
+#include <blk.h>
 #include <env.h>
+#include <image.h>
 #include <log.h>
 #include <malloc.h>
+#include <memalign.h>
 #include <command.h>
 #include <mtd.h>
 #include <net-lwip.h>
 #include <net.h>
+#include <part.h>
 #include <initcall.h>
 #include <ubi_uboot.h>
 #include <watchdog.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/string.h>
+#include <linux/libfdt.h>
 #include <console.h>
 #include <asm/gpio.h>
 #include <asm/global_data.h>
 #include <dt-bindings/gpio/gpio.h>
+
+#ifdef crc32
+#undef crc32
+#endif
+#include <u-boot/crc.h>
 
 #include <lwip/netif.h>
 #include <lwip/pbuf.h>
@@ -45,7 +55,34 @@
 
 DECLARE_GLOBAL_DATA_PTR;
 
-int xr1710g_sync_factory(void);
+__weak int xr1710g_sync_factory(void)
+{
+	return 0;
+}
+
+__weak void recovery_board_watchdog_kick(void)
+{
+}
+
+__weak void recovery_board_http_acl(bool enable)
+{
+}
+
+static void recovery_watchdog_poll(void)
+{
+	recovery_board_watchdog_kick();
+	WATCHDOG_RESET();
+}
+
+static bool recovery_debug_enabled(void)
+{
+	return env_get_yesno("recovery_debug") == 1;
+}
+
+static bool recovery_board_is_sbe1v1k(void)
+{
+	return ofnode_device_is_compatible(ofnode_root(), "askey,sbe1v1k");
+}
 
 /*
  * Upload buffer
@@ -56,6 +93,11 @@ int xr1710g_sync_factory(void);
 #define RECOVERY_UPLOAD_MAX    (32 * 1024 * 1024UL)
 #define RECOVERY_MIN_FIRMWARE_SIZE (1 * 1024 * 1024UL)
 #define RECOVERY_MAX_UBOOT_SIZE    (1 * 1024 * 1024UL)
+#define RECOVERY_MAX_UBOOT_SIZE_MMC (4 * 1024 * 1024UL)
+#define RECOVERY_KERNEL_PAD_SIZE    (7000 * 1024UL)
+#define RECOVERY_ROOTFS_DATA_CLEAR  (4 * 1024 * 1024UL)
+#define RECOVERY_MMC_WRITE_CHUNK    (1024 * 1024UL)
+#define RECOVERY_REPARTITION_MAX    64UL
 
 /* Delay before reboot after flashing completes, to let browser finish reads */
 #define REBOOT_DELAY_MS        3000
@@ -101,6 +143,11 @@ int xr1710g_sync_factory(void);
 #define RECOVERY_UBOOTENV_SIZE (1 * 1024 * 1024UL)
 #define RECOVERY_FACTORY_SIZE  (1 * 1024 * 1024UL)
 #define RECOVERY_UBI_WRITE_CHUNK (1024 * 1024U)
+#define RECOVERY_APPSBLENV_PART "0#0:APPSBLENV"
+#define RECOVERY_APPSBLENV_SIZE (256 * 1024UL)
+#define RECOVERY_ENV_CRC_SIZE   4
+#define RECOVERY_SBE1V1K_REPARTITION_TOKEN "SBE1V1K_REPARTITION"
+#define RECOVERY_SBE1V1K_CHAINLOADER_PART "0#chainloader"
 
 static u8 *recv_base;
 static u32 recv_off;
@@ -117,6 +164,7 @@ static volatile u32 prog_erase_done;
 static volatile u32 prog_write_total;
 static volatile u32 prog_write_done;
 static volatile int prog_phase; /* 0 idle, 1 erase, 2 write, 3 done, -1 error */
+static volatile int prog_reboot;
 static unsigned long long prog_erase_volume_base;
 static unsigned long long prog_erase_volume_bytes;
 static struct recovery_status_led_ctrl *prog_status_leds;
@@ -143,6 +191,7 @@ static void recovery_prepare_static_network(void)
 enum upload_target {
 	TARGET_FIRMWARE = 0,
 	TARGET_UBOOT,
+	TARGET_REPARTITION,
 };
 static enum upload_target current_target = TARGET_FIRMWARE;
 static bool current_force_recreate;
@@ -150,6 +199,7 @@ static bool current_force_recreate;
 enum recovery_backend {
 	RECOVERY_BACKEND_MTD = 0,
 	RECOVERY_BACKEND_UBI,
+	RECOVERY_BACKEND_MMC,
 };
 
 struct recovery_target {
@@ -157,6 +207,8 @@ struct recovery_target {
 	const char *name;
 	const char *ubi_part;
 	struct mtd_info *mtd;
+	struct blk_desc *blk;
+	struct disk_partition part;
 	loff_t ofs;
 	unsigned long long cur_size;
 	unsigned long long limit;
@@ -744,6 +796,8 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 	int opt_len;
 	err_t err;
 
+	static u32 dhcp_tx_log_count;
+
 	p = pbuf_alloc(PBUF_TRANSPORT, sizeof(*reply), PBUF_RAM);
 	if (!p)
 		return -ENOMEM;
@@ -779,6 +833,15 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
 						       DHCP_OPTION_SUBNET_MASK,
 						       &srv->netmask);
+		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
+						       DHCP_OPTION_ROUTER,
+						       &srv->router);
+		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
+						       DHCP_OPTION_DNS_SERVER,
+						       &srv->dns);
+		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
+						       DHCP_OPTION_BROADCAST,
+						       &srv->broadcast);
 	}
 	if (opt_len < 0) {
 		pbuf_free(p);
@@ -793,6 +856,14 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 	err = udp_sendto_if_src(srv->pcb, p, &reply_addr,
 				LWIP_IANA_PORT_DHCP_CLIENT, srv->netif,
 				&src_addr);
+
+	if (recovery_debug_enabled() && dhcp_tx_log_count < 16) {
+		printf("DHCP TX type=%u xid=0x%08x to %s rc=%d\n",
+		       message_type, lwip_ntohl(req->xid),
+		       ip4addr_ntoa(&srv->client_ip), err);
+		dhcp_tx_log_count++;
+	}
+
 	pbuf_free(p);
 
 	return err == ERR_OK ? 0 : -EIO;
@@ -806,9 +877,9 @@ static void recovery_dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 	u8 pkt[RECOVERY_DHCP_MAX_MSG_LEN];
 	u8 message_type;
 	int copy_len, pkt_len;
+	static u32 dhcp_rx_log_count;
 
 	(void)pcb;
-	(void)addr;
 
 	if (!p)
 		return;
@@ -834,6 +905,13 @@ static void recovery_dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 	if (recovery_dhcp_get_u8_option(pkt, pkt_len, DHCP_OPTION_MESSAGE_TYPE,
 					&message_type))
 		goto out;
+
+	if (recovery_debug_enabled() && dhcp_rx_log_count < 16) {
+		printf("DHCP RX type=%u xid=0x%08x from %s:%u len=%d\n",
+		       message_type, lwip_ntohl(req->xid), ipaddr_ntoa(addr),
+		       port, pkt_len);
+		dhcp_rx_log_count++;
+	}
 
 	switch (message_type) {
 	case DHCP_DISCOVER:
@@ -1039,6 +1117,8 @@ static void recovery_led_poll(struct recovery_led_ctrl *ctrl)
 	}
 }
 
+static void recovery_service_runtime(struct recovery_status_led_ctrl *status_leds);
+
 static const char *recovery_default_target(enum upload_target tgt)
 {
 	switch (tgt) {
@@ -1046,6 +1126,8 @@ static const char *recovery_default_target(enum upload_target tgt)
 		return "fit";
 	case TARGET_UBOOT:
 		return "uboot";
+	case TARGET_REPARTITION:
+		return "repartition";
 	}
 
 	return "fit";
@@ -1058,6 +1140,8 @@ static const char *recovery_target_env(enum upload_target tgt)
 		return "recovery_mtd";
 	case TARGET_UBOOT:
 		return "recovery_mtd_uboot";
+	case TARGET_REPARTITION:
+		return "recovery_mtd";
 	}
 
 	return "recovery_mtd";
@@ -1070,6 +1154,8 @@ static const char *recovery_raw_env(enum upload_target tgt)
 		return "recovery_dev";
 	case TARGET_UBOOT:
 		return "recovery_dev_uboot";
+	case TARGET_REPARTITION:
+		return "recovery_dev";
 	}
 
 	return "recovery_dev";
@@ -1082,6 +1168,8 @@ static const char *recovery_size_env(enum upload_target tgt)
 		return "recovery_size";
 	case TARGET_UBOOT:
 		return "recovery_size_uboot";
+	case TARGET_REPARTITION:
+		return "recovery_size";
 	}
 
 	return "recovery_size";
@@ -1094,12 +1182,1202 @@ static ulong recovery_raw_offset(enum upload_target tgt)
 		return env_get_hex("recovery_ofs", 0x050000);
 	case TARGET_UBOOT:
 		return env_get_hex("uboot_ofs", 0x0);
+	case TARGET_REPARTITION:
+		return 0;
 	}
 
 	return 0;
 }
 
-static const char *recovery_ubi_part(enum upload_target tgt)
+static bool recovery_backend_is_mmc(void)
+{
+	const char *backend = env_get("recovery_backend");
+
+	return backend && (!strcasecmp(backend, "mmc") ||
+			   !strcasecmp(backend, "emmc"));
+}
+
+static const char *recovery_mmcdev(void)
+{
+	const char *dev = env_get("recovery_mmcdev");
+
+	if (!dev)
+		dev = env_get("mmcdev");
+
+	return dev ?: "0";
+}
+
+static const char *recovery_mmc_part_env(enum upload_target tgt)
+{
+	switch (tgt) {
+	case TARGET_FIRMWARE:
+		return "recovery_part_kernel";
+	case TARGET_UBOOT:
+		return "recovery_part_uboot";
+	case TARGET_REPARTITION:
+		return "recovery_part_uboot";
+	}
+
+	return "recovery_part_kernel";
+}
+
+static unsigned long recovery_uboot_limit(void)
+{
+	unsigned long def = recovery_backend_is_mmc() ?
+			    RECOVERY_MAX_UBOOT_SIZE_MMC :
+			    RECOVERY_MAX_UBOOT_SIZE;
+
+	return env_get_hex("recovery_uboot_max", def);
+}
+
+static bool recovery_string_is_uint(const char *s)
+{
+	if (!s || !*s)
+		return false;
+
+	while (*s) {
+		if (*s < '0' || *s > '9')
+			return false;
+		s++;
+	}
+
+	return true;
+}
+
+static int recovery_format_mmc_part_spec(const char *spec, char *buf,
+					 size_t buf_len)
+{
+	const char *sep;
+	size_t dev_len;
+	int len;
+
+	if (!spec || !*spec)
+		return -EINVAL;
+
+	if (strchr(spec, '#')) {
+		strlcpy(buf, spec, buf_len);
+		return 0;
+	}
+
+	sep = strchr(spec, ':');
+	if (sep && !recovery_string_is_uint(sep + 1)) {
+		dev_len = sep - spec;
+		if (dev_len >= buf_len)
+			return -ENOSPC;
+
+		memcpy(buf, spec, dev_len);
+		buf[dev_len] = '#';
+		strlcpy(buf + dev_len + 1, sep + 1, buf_len - dev_len - 1);
+		return 0;
+	}
+
+	if (sep) {
+		strlcpy(buf, spec, buf_len);
+		return 0;
+	}
+
+	len = snprintf(buf, buf_len, "%s#%s", recovery_mmcdev(), spec);
+	if (len < 0 || len >= buf_len)
+		return -ENOSPC;
+
+	return 0;
+}
+
+static int recovery_get_mmc_part(const char *spec, struct blk_desc **desc,
+				 struct disk_partition *part)
+{
+	char part_spec[96];
+	int ret;
+
+	ret = recovery_format_mmc_part_spec(spec, part_spec, sizeof(part_spec));
+	if (ret)
+		return ret;
+
+	ret = part_get_info_by_dev_and_name_or_num("mmc", part_spec, desc,
+						   part, false);
+	if (ret < 0)
+		printf("Failed to resolve eMMC partition '%s': %d\n",
+		       part_spec, ret);
+
+	return ret < 0 ? ret : 0;
+}
+
+static unsigned long long
+recovery_mmc_part_bytes(const struct disk_partition *part)
+{
+	return (unsigned long long)part->size *
+	       (unsigned long long)part->blksz;
+}
+
+static bool recovery_data_range_ok(const void *base, size_t total,
+				   const void *data, size_t size)
+{
+	uintptr_t b = (uintptr_t)base;
+	uintptr_t d = (uintptr_t)data;
+
+	if (d < b)
+		return false;
+	if (size > total)
+		return false;
+	if (d - b > total - size)
+		return false;
+
+	return true;
+}
+
+struct recovery_image_part {
+	const void *data;
+	size_t size;
+};
+
+struct recovery_firmware_image {
+	struct recovery_image_part kernel;
+	struct recovery_image_part rootfs;
+};
+
+static bool recovery_name_has_prefix(const char *name, const char *prefix)
+{
+	size_t plen;
+
+	if (!name || !prefix)
+		return false;
+
+	plen = strlen(prefix);
+	return !strncasecmp(name, prefix, plen);
+}
+
+static const char *recovery_basename(const char *name)
+{
+	const char *base, *p;
+
+	if (!name)
+		return "";
+
+	base = name;
+	for (p = name; *p; p++) {
+		if (*p == '/')
+			base = p + 1;
+	}
+
+	return base;
+}
+
+static bool recovery_is_kernel_name(const char *name)
+{
+	const char *base = recovery_basename(name);
+
+	return recovery_name_has_prefix(base, "hlos") ||
+	       recovery_name_has_prefix(base, "kernel");
+}
+
+static bool recovery_is_rootfs_name(const char *name)
+{
+	const char *base = recovery_basename(name);
+
+	return recovery_name_has_prefix(base, "rootfs") ||
+	       !strcasecmp(base, "root") ||
+	       !strcasecmp(base, "fs") ||
+	       recovery_name_has_prefix(base, "fs-");
+}
+
+static int recovery_fit_extract_firmware(const void *fit, size_t fit_size,
+					 struct recovery_firmware_image *image)
+{
+	int images, node, ret;
+
+	memset(image, 0, sizeof(*image));
+
+	ret = fit_check_format(fit, fit_size);
+	if (ret)
+		return ret;
+
+	images = fdt_path_offset(fit, FIT_IMAGES_PATH);
+	if (images < 0)
+		return images;
+
+	fdt_for_each_subnode(node, fit, images) {
+		const char *node_name;
+		const char *desc;
+		const char *type;
+		const void *data;
+		size_t size;
+
+		if (fit_image_get_data(fit, node, &data, &size))
+			continue;
+
+		if (!recovery_data_range_ok(fit, fit_size, data, size))
+			return -EINVAL;
+
+		node_name = fdt_get_name(fit, node, NULL);
+		desc = fdt_getprop(fit, node, FIT_DESC_PROP, NULL);
+		type = fdt_getprop(fit, node, FIT_TYPE_PROP, NULL);
+
+		if (!image->kernel.data &&
+		    (recovery_is_kernel_name(node_name) ||
+		     recovery_is_kernel_name(desc) ||
+		     (type && !strcasecmp(type, "kernel")))) {
+			image->kernel.data = data;
+			image->kernel.size = size;
+			continue;
+		}
+
+		if (!image->rootfs.data &&
+		    (recovery_is_rootfs_name(node_name) ||
+		     recovery_is_rootfs_name(desc) ||
+		     (type && (!strcasecmp(type, "filesystem") ||
+			       !strcasecmp(type, "rootfs"))))) {
+			image->rootfs.data = data;
+			image->rootfs.size = size;
+		}
+	}
+
+	return image->kernel.data || image->rootfs.data ? 0 : -ENOENT;
+}
+
+struct recovery_tar_header {
+	char name[100];
+	char mode[8];
+	char uid[8];
+	char gid[8];
+	char size[12];
+	char mtime[12];
+	char chksum[8];
+	char typeflag;
+	char linkname[100];
+	char magic[6];
+	char version[2];
+	char uname[32];
+	char gname[32];
+	char devmajor[8];
+	char devminor[8];
+	char prefix[155];
+};
+
+static bool recovery_tar_header_empty(const struct recovery_tar_header *hdr)
+{
+	const u8 *p = (const u8 *)hdr;
+	int i;
+
+	for (i = 0; i < 512; i++) {
+		if (p[i])
+			return false;
+	}
+
+	return true;
+}
+
+static int recovery_tar_octal(const char *field, size_t len, size_t *value)
+{
+	size_t v = 0;
+	size_t i;
+
+	for (i = 0; i < len; i++) {
+		char c = field[i];
+
+		if (c == '\0' || c == ' ')
+			break;
+		if (c < '0' || c > '7')
+			return -EINVAL;
+		v = (v << 3) + c - '0';
+	}
+
+	*value = v;
+	return 0;
+}
+
+static void recovery_tar_name(const struct recovery_tar_header *hdr,
+			      char *name, size_t name_len)
+{
+	size_t prefix_len = strnlen(hdr->prefix, sizeof(hdr->prefix));
+	size_t file_len = strnlen(hdr->name, sizeof(hdr->name));
+	size_t off = 0;
+
+	if (!name_len)
+		return;
+
+	if (prefix_len) {
+		off = prefix_len >= name_len ? name_len - 1 : prefix_len;
+		memcpy(name, hdr->prefix, off);
+		if (off < name_len - 1)
+			name[off++] = '/';
+	}
+
+	if (off < name_len - 1) {
+		size_t copy = file_len;
+
+		if (copy > name_len - 1 - off)
+			copy = name_len - 1 - off;
+		memcpy(name + off, hdr->name, copy);
+		off += copy;
+	}
+
+	name[off] = '\0';
+}
+
+static int recovery_tar_extract_firmware(const void *tar, size_t tar_size,
+					 struct recovery_firmware_image *image)
+{
+	const u8 *base = tar;
+	size_t off = 0;
+
+	memset(image, 0, sizeof(*image));
+
+	while (off + 512 <= tar_size) {
+		const struct recovery_tar_header *hdr =
+			(const struct recovery_tar_header *)(base + off);
+		char name[256];
+		size_t size;
+
+		if (recovery_tar_header_empty(hdr))
+			break;
+
+		if (memcmp(hdr->magic, "ustar", 5))
+			return -EINVAL;
+
+		if (recovery_tar_octal(hdr->size, sizeof(hdr->size), &size))
+			return -EINVAL;
+
+		if (off + 512 > tar_size || size > tar_size - off - 512)
+			return -EINVAL;
+
+		recovery_tar_name(hdr, name, sizeof(name));
+
+		if ((hdr->typeflag == '\0' || hdr->typeflag == '0') &&
+		    !image->kernel.data && recovery_is_kernel_name(name)) {
+			image->kernel.data = base + off + 512;
+			image->kernel.size = size;
+		} else if ((hdr->typeflag == '\0' || hdr->typeflag == '0') &&
+			   !image->rootfs.data && recovery_is_rootfs_name(name)) {
+			image->rootfs.data = base + off + 512;
+			image->rootfs.size = size;
+		}
+
+		off += 512 + ALIGN(size, 512);
+	}
+
+	return image->kernel.data || image->rootfs.data ? 0 : -ENOENT;
+}
+
+static int recovery_raw_extract_firmware(const void *raw, size_t raw_size,
+					 struct recovery_firmware_image *image)
+{
+	size_t kernel_pad = env_get_hex("recovery_kernel_pad",
+				       RECOVERY_KERNEL_PAD_SIZE);
+	size_t kernel_size = kernel_pad;
+
+	memset(image, 0, sizeof(*image));
+
+	if (raw_size <= kernel_pad)
+		return -ENOENT;
+
+	if (!fit_check_format(raw, raw_size)) {
+		size_t fit_size = fdt_totalsize(raw);
+
+		if (fit_size > 0 && fit_size <= kernel_pad)
+			kernel_size = fit_size;
+	}
+
+	image->kernel.data = raw;
+	image->kernel.size = kernel_size;
+	image->rootfs.data = (const u8 *)raw + kernel_pad;
+	image->rootfs.size = raw_size - kernel_pad;
+
+	return 0;
+}
+
+static int recovery_extract_firmware(const void *data, size_t size,
+				     struct recovery_firmware_image *image)
+{
+	int ret;
+
+	ret = recovery_fit_extract_firmware(data, size, image);
+	if (!ret && image->kernel.data && image->rootfs.data) {
+		printf("Firmware image: FIT sections kernel=%lu rootfs=%lu\n",
+		       (ulong)image->kernel.size, (ulong)image->rootfs.size);
+		return 0;
+	}
+
+	ret = recovery_tar_extract_firmware(data, size, image);
+	if (!ret && image->kernel.data && image->rootfs.data) {
+		printf("Firmware image: sysupgrade tar kernel=%lu rootfs=%lu\n",
+		       (ulong)image->kernel.size, (ulong)image->rootfs.size);
+		return 0;
+	}
+
+	ret = recovery_raw_extract_firmware(data, size, image);
+	if (!ret && image->kernel.data && image->rootfs.data) {
+		printf("Firmware image: raw kernel/rootfs split kernel=%lu rootfs=%lu\n",
+		       (ulong)image->kernel.size, (ulong)image->rootfs.size);
+		return 0;
+	}
+
+	printf("Firmware image must contain both kernel/hlos and root/rootfs/fs payloads\n");
+	return -EINVAL;
+}
+
+static int recovery_mmc_write_part(const char *spec,
+				   struct recovery_status_led_ctrl *status_leds,
+				   const void *data, size_t size,
+				   size_t progress_base)
+{
+	struct disk_partition part;
+	struct blk_desc *desc;
+	unsigned long long capacity;
+	ulong blksz, chunk_size;
+	u8 *chunk_buf;
+	size_t written = 0;
+	int ret;
+
+	ret = recovery_get_mmc_part(spec, &desc, &part);
+	if (ret)
+		return ret;
+
+	blksz = part.blksz ?: desc->blksz;
+	capacity = recovery_mmc_part_bytes(&part);
+	if (size > capacity) {
+		printf("Image size %lu exceeds eMMC partition '%s' size %llu\n",
+		       (ulong)size, spec, capacity);
+		return -EFBIG;
+	}
+
+	chunk_size = ALIGN(RECOVERY_MMC_WRITE_CHUNK, blksz);
+	if (chunk_size < blksz)
+		chunk_size = blksz;
+
+	chunk_buf = memalign(ARCH_DMA_MINALIGN, chunk_size);
+	if (!chunk_buf)
+		return -ENOMEM;
+
+	while (written < size) {
+		size_t todo = size - written;
+		size_t write_len;
+		lbaint_t blk;
+		lbaint_t blkcnt;
+
+		if (todo > chunk_size)
+			todo = chunk_size;
+
+		write_len = ALIGN(todo, blksz);
+		memset(chunk_buf, 0, write_len);
+		memcpy(chunk_buf, (const u8 *)data + written, todo);
+
+		blk = part.start + written / blksz;
+		blkcnt = write_len / blksz;
+		if (blk_dwrite(desc, blk, blkcnt, chunk_buf) != blkcnt) {
+			printf("eMMC write failed at partition '%s' block " LBAF "\n",
+			       spec, blk);
+			free(chunk_buf);
+			return -EIO;
+		}
+
+		written += todo;
+		prog_write_done = progress_base + written;
+		prog_done = prog_erase_done + prog_write_done;
+		recovery_service_runtime(status_leds);
+	}
+
+	free(chunk_buf);
+	return 0;
+}
+
+static int recovery_mmc_clear_part(const char *spec,
+				   struct recovery_status_led_ctrl *status_leds,
+				   size_t clear_size)
+{
+	struct disk_partition part;
+	struct blk_desc *desc;
+	unsigned long long capacity;
+	ulong blksz, chunk_size;
+	u8 *chunk_buf;
+	size_t cleared = 0;
+	int ret;
+
+	if (!spec || !*spec || !clear_size)
+		return 0;
+
+	ret = recovery_get_mmc_part(spec, &desc, &part);
+	if (ret)
+		return ret;
+
+	blksz = part.blksz ?: desc->blksz;
+	capacity = recovery_mmc_part_bytes(&part);
+	if (clear_size > capacity)
+		clear_size = capacity;
+
+	clear_size = ALIGN(clear_size, blksz);
+	chunk_size = ALIGN(RECOVERY_MMC_WRITE_CHUNK, blksz);
+	if (chunk_size < blksz)
+		chunk_size = blksz;
+
+	chunk_buf = memalign(ARCH_DMA_MINALIGN, chunk_size);
+	if (!chunk_buf)
+		return -ENOMEM;
+
+	memset(chunk_buf, 0, chunk_size);
+
+	while (cleared < clear_size) {
+		size_t todo = clear_size - cleared;
+		lbaint_t blk, blkcnt;
+
+		if (todo > chunk_size)
+			todo = chunk_size;
+
+		blk = part.start + cleared / blksz;
+		blkcnt = todo / blksz;
+		if (blk_dwrite(desc, blk, blkcnt, chunk_buf) != blkcnt) {
+			printf("eMMC clear failed at partition '%s' block " LBAF "\n",
+			       spec, blk);
+			free(chunk_buf);
+			return -EIO;
+		}
+
+		cleared += todo;
+		recovery_service_runtime(status_leds);
+	}
+
+	free(chunk_buf);
+	return 0;
+}
+
+struct recovery_factory_part {
+	const char *spec;
+	lbaint_t start;
+	lbaint_t size;
+};
+
+static const struct recovery_factory_part sbe1v1k_factory_parts[] = {
+	{ "0#0:SBL1", 34, 2048 },
+	{ "0#0:WIFIFW_1", 61474, 20480 },
+	{ "0#0:HLOS", 81954, 14336 },
+	{ "0#0:HLOS_1", 96290, 14336 },
+	{ "0#rootfs", 110626, 249856 },
+	{ "0#rootfs_1", 360482, 249856 },
+	{ "0#rootfs_data", 610338, 1048576 },
+	{ "0#rootfs_data_1", 1658914, 1048576 },
+	{ "0#rsvd_2", 5201954, 65536 },
+	{ "0#ASKEYMFC", 15249408, 20480 },
+};
+
+static const char sbe1v1k_openwrt_gpt[] =
+	"uuid_disk=98101B32-BBE2-4BF2-A06E-2BB33D000C20;"
+	"name=0:SBL1,start=0x4400,size=0x100000,type=DEA0BA2C-CBDD-4805-B4F9-F428251C3E98,uuid=8A52D344-343A-E549-ED9A-B264DE413D55;"
+	"name=0:SBL1_1,start=0x104400,size=0x100000,type=7A3DF1A3-A31A-454D-BD78-DF259ED486BE,uuid=A49B7547-7E90-6DB7-F276-06E754650644;"
+	"name=0:BOOTCONFIG,start=0x204400,size=0x80000,type=2B7D04FF-31F0-4E6A-BE9A-DA50314DAD58,uuid=025187DC-4C24-21A6-D491-D58A0F0435BD;"
+	"name=0:BOOTCONFIG1,start=0x284400,size=0x80000,type=7BD25378-5C39-11E5-8A77-40A8F05F1418,uuid=F1F736F9-BF18-2C53-8F1D-69215C962CEA;"
+	"name=0:QSEE,start=0x304400,size=0x300000,type=A053AA7F-40B8-4B1C-BA08-2F68AC71A4F4,uuid=3961AB4B-A7C9-7CAB-DC73-C7D4941C3903;"
+	"name=0:QSEE_1,start=0x604400,size=0x300000,type=A6DD74A1-C8BF-4DBC-AE39-62B8E78C4038,uuid=A52286FC-F827-D89C-1477-6B52F206828E;"
+	"name=0:DEVCFG,start=0x904400,size=0x80000,type=F65D4B16-343D-4E25-AAFC-BE99B6556A6D,uuid=687EA2EE-1821-0010-761B-02DB14BEEC22;"
+	"name=0:DEVCFG_1,start=0x984400,size=0x80000,type=48BFA451-9443-46F7-B400-892A6B1BFC16,uuid=FDEC5365-B2C0-D094-1228-A39958709F8E;"
+	"name=0:APDP,start=0xa04400,size=0x80000,type=318B7C50-A113-0FC1-F3A2-59E76A68F3F7,uuid=1AA0D675-A37F-4535-E72D-04F404D859FC;"
+	"name=0:APDP_1,start=0xa84400,size=0x80000,type=BC4386C7-B38D-BA64-A4EC-127D57C3F24B,uuid=4FAC8501-E709-EF23-AAF3-E5EF62BC61CA;"
+	"name=0:TME,start=0xb04400,size=0x80000,type=0833175E-AF8F-BACC-F2A2-5B70354B1A0A,uuid=3F5C7D97-610B-9F02-FBD0-487CE616B38C;"
+	"name=0:TME_1,start=0xb84400,size=0x80000,type=66A49874-13D3-66EA-B0B7-3F61C7E405CD,uuid=ED1D73AD-604C-6838-F9C5-A0EDD4DBFFCF;"
+	"name=0:RPM,start=0xc04400,size=0x80000,type=098DF793-D712-413D-9D4E-89D711772228,uuid=1EB4925F-885B-D6ED-8765-382281B80334;"
+	"name=0:RPM_1,start=0xc84400,size=0x80000,type=2D2BE762-890B-11E5-AAF3-40A8F05F1418,uuid=001588BF-1DB6-1D47-6FFC-ABFC1A131725;"
+	"name=0:CDT,start=0xd04400,size=0x80000,type=A19F205F-CCD8-4B6D-8F1E-2D9BC24CFFB1,uuid=AE2F5404-53F5-D041-E55E-D2FA3993216F;"
+	"name=0:CDT_1,start=0xd84400,size=0x80000,type=7A795379-C250-4282-A2C7-FC4E13F4A43D,uuid=EA5E685D-7172-398E-3A8D-F5BB64D46929;"
+	"name=0:APPSBLENV,start=0xe04400,size=0x40000,type=300FFDCD-22E0-47E7-9A23-F16ED9382387,uuid=FB5FF3E9-FF90-D2F8-D453-9A0BF004A4E9;"
+	"name=0:APPSBL,start=0xe44400,size=0x200000,type=400FFDCD-22E0-47E7-9A23-F16ED9382388,uuid=8BE81F01-FAE2-9AFA-9DC1-1AD01F5B3ADE;"
+	"name=0:APPSBL_1,start=0x1044400,size=0x200000,type=C126787D-3EEF-444C-9E43-FEFF3F103E22,uuid=E7988837-5B97-DE5E-1354-4A0D190B878F;"
+	"name=0:ART,start=0x1244400,size=0x100000,type=A72E50C1-D37C-429D-9620-35FCA612B9A8,uuid=E4871F79-1E23-8018-ABFD-3EE3AD567B10;"
+	"name=0:ETHPHYFW,start=0x1344400,size=0x80000,type=C1DC4CAB-430B-4CDC-A8C5-7115912B74FE,uuid=65EF33C8-6506-5583-5171-24A2A56C7EAC;"
+	"name=0:LICENSE,start=0x13c4400,size=0x40000,type=A7A81A61-66CE-C908-F4A2-82D39D2AFF57,uuid=38A446C9-37EC-230A-9F64-603D3E5F98A5;"
+	"name=0:WIFIFW,start=0x1404400,size=0xa00000,type=888D8069-8D27-40A8-95A9-6006E1CE9B3B,uuid=4044C5A9-1C7A-ABEB-C3C4-8F46644DCD06;"
+	"name=0:WIFIFW_1,start=0x1e04400,size=0xa00000,type=981476F5-5CD7-42DB-9CE9-87B3A31AADBD,uuid=7A86C4EE-D900-D817-BEBC-5CF07BF59CE1;"
+	"name=0:HLOS,start=0x2804400,size=0x700000,type=B51F2982-3EBE-46DE-8721-EE641E1F9997,uuid=BB5169B0-2E1C-0EE4-AFA7-D9613B5605AC;"
+	"name=0:HLOS_1,start=0x2f04400,size=0x700000,type=A71DA577-7F81-4626-B4A2-E377F9174525,uuid=F81FBCEB-AB17-2544-4762-C5206AC116AE;"
+	"name=chainloader,start=0x3604400,size=0x400000,type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7;"
+	"name=kernel,start=0x3a04400,size=0x2000000,type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7;"
+	"name=rootfs,start=0x5a04400,size=0x40000000,type=0FC63DAF-8483-4772-8E79-3D69D8477DE4;"
+	"name=rootfs_data,start=0x45a04400,size=-,type=0FC63DAF-8483-4772-8E79-3D69D8477DE4;";
+
+static int recovery_verify_factory_gpt(struct recovery_status_led_ctrl *status_leds)
+{
+	size_t i;
+
+	prog_phase = 1;
+	prog_erase_done = 0;
+	prog_erase_total = ARRAY_SIZE(sbe1v1k_factory_parts);
+	prog_write_done = 0;
+	prog_write_total = 0;
+	prog_total = prog_erase_total;
+	prog_done = 0;
+
+	for (i = 0; i < ARRAY_SIZE(sbe1v1k_factory_parts); i++) {
+		const struct recovery_factory_part *expect =
+			&sbe1v1k_factory_parts[i];
+		struct disk_partition part;
+		struct blk_desc *desc;
+		int ret;
+
+		ret = recovery_get_mmc_part(expect->spec, &desc, &part);
+		if (ret)
+			return ret;
+
+		if (part.start != expect->start || part.size != expect->size) {
+			printf("Factory GPT check failed for '%s': start " LBAF
+			       " size " LBAF ", expected start " LBAF
+			       " size " LBAF "\n",
+			       expect->spec, part.start, part.size,
+			       expect->start, expect->size);
+			return -EINVAL;
+		}
+
+		prog_erase_done = i + 1;
+		prog_done = prog_erase_done;
+		recovery_service_runtime(status_leds);
+	}
+
+	return 0;
+}
+
+static int recovery_verify_openwrt_gpt(void)
+{
+	struct disk_partition part;
+	struct blk_desc *desc;
+	int ret;
+
+	ret = recovery_get_mmc_part("0#0:HLOS", &desc, &part);
+	if (ret || part.start != 81954 || part.size != 14336)
+		return ret ?: -EINVAL;
+
+	ret = recovery_get_mmc_part("0#0:HLOS_1", &desc, &part);
+	if (ret || part.start != 96290 || part.size != 14336)
+		return ret ?: -EINVAL;
+
+	ret = recovery_get_mmc_part(RECOVERY_SBE1V1K_CHAINLOADER_PART,
+				    &desc, &part);
+	if (ret || part.start != 110626 || part.size != 8192)
+		return ret ?: -EINVAL;
+
+	ret = recovery_get_mmc_part("0#kernel", &desc, &part);
+	if (ret || part.start != 118818 || part.size != 65536)
+		return ret ?: -EINVAL;
+
+	ret = recovery_get_mmc_part("0#rootfs", &desc, &part);
+	if (ret || part.start != 184354 || part.size != 2097152)
+		return ret ?: -EINVAL;
+
+	ret = recovery_get_mmc_part("0#rootfs_data", &desc, &part);
+	if (ret || part.start != 2281506 || part.size < 1048576)
+		return ret ?: -EINVAL;
+
+	return 0;
+}
+
+static bool recovery_fit_has_image_node(const void *fit, const char *name)
+{
+	int images;
+
+	images = fdt_path_offset(fit, FIT_IMAGES_PATH);
+	if (images < 0)
+		return false;
+
+	return fdt_subnode_offset(fit, images, name) >= 0;
+}
+
+static bool recovery_is_sbe1v1k_chainloader_fit(const void *fit,
+						size_t fit_size)
+{
+	const char *desc;
+
+	if (fit_check_format(fit, fit_size))
+		return false;
+
+	desc = fdt_getprop(fit, 0, FIT_DESC_PROP, NULL);
+	if (!desc || !strstr(desc, "SBE1V1K") || !strstr(desc, "chainloader"))
+		return false;
+
+	return recovery_fit_has_image_node(fit, "kernel-1") &&
+	       recovery_fit_has_image_node(fit, "uboot-1");
+}
+
+static int recovery_find_running_chainloader_fit(const void **fitp,
+						 size_t *fit_sizep)
+{
+	ulong candidates[] = {
+		0x80000000UL,
+	};
+	unsigned long max = recovery_uboot_limit();
+	size_t i, j;
+
+	for (i = 0; i < ARRAY_SIZE(candidates); i++) {
+		const void *fit;
+		size_t fit_size;
+		ulong addr = candidates[i];
+
+		if (!addr)
+			continue;
+
+		for (j = 0; j < i; j++) {
+			if (candidates[j] == addr)
+				break;
+		}
+		if (j != i)
+			continue;
+
+		fit = (const void *)addr;
+		if (fit_check_format(fit, IMAGE_SIZE_INVAL))
+			continue;
+
+		fit_size = fit_get_size(fit);
+		if (!fit_size || fit_size > max)
+			continue;
+
+		if (!recovery_is_sbe1v1k_chainloader_fit(fit, fit_size))
+			continue;
+
+		*fitp = fit;
+		*fit_sizep = fit_size;
+		printf("Found running SBE1V1K chainloader FIT at 0x%08lx (%lu bytes)\n",
+		       addr, (ulong)fit_size);
+		return 0;
+	}
+
+	printf("Cannot find the running SBE1V1K chainloader FIT in RAM\n");
+	return -ENOENT;
+}
+
+static int recovery_load_appsblenv(u8 **bufp, size_t *env_bytesp,
+				   struct blk_desc **descp,
+				   struct disk_partition *partp)
+{
+	struct disk_partition part;
+	struct blk_desc *desc;
+	unsigned long long capacity;
+	u8 *buf;
+	int ret;
+
+	ret = recovery_get_mmc_part(RECOVERY_APPSBLENV_PART, &desc, &part);
+	if (ret)
+		return ret;
+
+	capacity = recovery_mmc_part_bytes(&part);
+	if (capacity != RECOVERY_APPSBLENV_SIZE) {
+		printf("Unexpected APPSBLENV size %llu, expected %lu\n",
+		       capacity, RECOVERY_APPSBLENV_SIZE);
+		return -EINVAL;
+	}
+
+	buf = memalign(ARCH_DMA_MINALIGN, RECOVERY_APPSBLENV_SIZE);
+	if (!buf)
+		return -ENOMEM;
+
+	if (blk_dread(desc, part.start, part.size, buf) != part.size) {
+		printf("Failed to read APPSBLENV from eMMC\n");
+		free(buf);
+		return -EIO;
+	}
+
+	*bufp = buf;
+	*env_bytesp = RECOVERY_APPSBLENV_SIZE;
+	if (descp)
+		*descp = desc;
+	if (partp)
+		*partp = part;
+
+	return 0;
+}
+
+static int recovery_verify_appsblenv_crc(const u8 *env_buf, size_t env_bytes)
+{
+	u32 stored_crc;
+	u32 calc_crc;
+
+	if (env_bytes <= RECOVERY_ENV_CRC_SIZE)
+		return -EINVAL;
+
+	memcpy(&stored_crc, env_buf, sizeof(stored_crc));
+	calc_crc = crc32(0, env_buf + RECOVERY_ENV_CRC_SIZE,
+			 env_bytes - RECOVERY_ENV_CRC_SIZE);
+	if (stored_crc != calc_crc) {
+		printf("APPSBLENV CRC mismatch: stored 0x%08x calculated 0x%08x\n",
+		       stored_crc, calc_crc);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int recovery_check_appsblenv(void)
+{
+	size_t env_bytes;
+	u8 *env_buf;
+	int ret;
+
+	ret = recovery_load_appsblenv(&env_buf, &env_bytes, NULL, NULL);
+	if (ret)
+		return ret;
+
+	ret = recovery_verify_appsblenv_crc(env_buf, env_bytes);
+	free(env_buf);
+
+	return ret;
+}
+
+struct recovery_env_update {
+	const char *key;
+	const char *value;
+};
+
+static bool recovery_env_entry_is_key(const char *entry, const char *key)
+{
+	size_t key_len = strlen(key);
+
+	return !strncmp(entry, key, key_len) && entry[key_len] == '=';
+}
+
+static bool recovery_env_entry_replaced(const char *entry,
+					const struct recovery_env_update *updates,
+					size_t update_count)
+{
+	size_t i;
+
+	for (i = 0; i < update_count; i++) {
+		if (recovery_env_entry_is_key(entry, updates[i].key))
+			return true;
+	}
+
+	return false;
+}
+
+static int recovery_env_append(char *data, size_t data_size, size_t *offp,
+			       const char *key, const char *value)
+{
+	int len;
+
+	if (*offp >= data_size)
+		return -ENOSPC;
+
+	len = snprintf(data + *offp, data_size - *offp, "%s=%s", key, value);
+	if (len < 0)
+		return len;
+
+	if (*offp + len + 2 > data_size)
+		return -ENOSPC;
+
+	*offp += len + 1;
+	return 0;
+}
+
+static int recovery_update_env_data(u8 *env_data, size_t data_size,
+				    const struct recovery_env_update *updates,
+				    size_t update_count)
+{
+	char *new_data;
+	size_t old_off = 0;
+	size_t new_off = 0;
+	size_t i;
+	int ret = 0;
+
+	new_data = malloc(data_size);
+	if (!new_data)
+		return -ENOMEM;
+	memset(new_data, 0, data_size);
+
+	while (old_off < data_size && env_data[old_off]) {
+		const char *entry = (const char *)env_data + old_off;
+		size_t remain = data_size - old_off;
+		size_t entry_len = strnlen(entry, remain);
+
+		if (entry_len == remain) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		if (!recovery_env_entry_replaced(entry, updates, update_count)) {
+			if (new_off + entry_len + 2 > data_size) {
+				ret = -ENOSPC;
+				goto out;
+			}
+			memcpy(new_data + new_off, entry, entry_len + 1);
+			new_off += entry_len + 1;
+		}
+
+		old_off += entry_len + 1;
+	}
+
+	for (i = 0; i < update_count; i++) {
+		ret = recovery_env_append(new_data, data_size, &new_off,
+					  updates[i].key, updates[i].value);
+		if (ret)
+			goto out;
+	}
+
+	memcpy(env_data, new_data, data_size);
+
+out:
+	free(new_data);
+	return ret;
+}
+
+static int recovery_write_appsblenv(struct recovery_status_led_ctrl *status_leds,
+				    size_t progress_base)
+{
+	static const struct recovery_env_update updates[] = {
+		{
+			"bootargs",
+			"console=ttyMSM0,115200n8 rootwait root=PARTLABEL=rootfs"
+		},
+		{
+			"boot_chainloader",
+			"mmc read 0x44000000 0x0001b022 0x2000; bootm 0x44000000"
+		},
+		{ "do_boot", "run boot_chainloader" },
+		{
+			"bootcmd",
+			"echo \"Hit ctrl+c for shell...\"; if sleep 3; then run do_boot; else true; fi;"
+		},
+	};
+	struct disk_partition part;
+	struct blk_desc *desc;
+	size_t env_bytes;
+	u8 *env_buf;
+	u32 crc;
+	int ret;
+
+	ret = recovery_load_appsblenv(&env_buf, &env_bytes, &desc, &part);
+	if (ret)
+		return ret;
+
+	ret = recovery_verify_appsblenv_crc(env_buf, env_bytes);
+	if (ret)
+		goto out;
+
+	ret = recovery_update_env_data(env_buf + RECOVERY_ENV_CRC_SIZE,
+				       env_bytes - RECOVERY_ENV_CRC_SIZE,
+				       updates, ARRAY_SIZE(updates));
+	if (ret)
+		goto out;
+
+	crc = crc32(0, env_buf + RECOVERY_ENV_CRC_SIZE,
+		    env_bytes - RECOVERY_ENV_CRC_SIZE);
+	memcpy(env_buf, &crc, sizeof(crc));
+
+	if (blk_dwrite(desc, part.start, part.size, env_buf) != part.size) {
+		printf("Failed to write updated APPSBLENV to eMMC\n");
+		ret = -EIO;
+		goto out;
+	}
+
+	prog_write_done = progress_base + env_bytes;
+	prog_done = prog_erase_done + prog_write_done;
+	recovery_service_runtime(status_leds);
+
+out:
+	free(env_buf);
+	return ret;
+}
+
+static int recovery_repartition_factory(struct recovery_status_led_ctrl *status_leds)
+{
+	const void *chainloader_fit;
+	size_t chainloader_size;
+	int ret;
+
+	if (recv_off != strlen(RECOVERY_SBE1V1K_REPARTITION_TOKEN) ||
+	    memcmp(recv_base, RECOVERY_SBE1V1K_REPARTITION_TOKEN,
+		   strlen(RECOVERY_SBE1V1K_REPARTITION_TOKEN))) {
+		printf("Invalid repartition confirmation token\n");
+		return -EINVAL;
+	}
+
+	if (!recovery_backend_is_mmc()) {
+		printf("Factory repartition requires eMMC recovery backend\n");
+		return -EINVAL;
+	}
+
+	ret = recovery_verify_factory_gpt(status_leds);
+	if (ret)
+		return ret;
+
+	ret = recovery_find_running_chainloader_fit(&chainloader_fit,
+						    &chainloader_size);
+	if (ret)
+		return ret;
+
+	ret = recovery_check_appsblenv();
+	if (ret)
+		return ret;
+
+	printf("Factory GPT verified. Writing OpenWrt GPT layout...\n");
+	prog_phase = 2;
+	prog_erase_done = prog_erase_total;
+	prog_write_done = 0;
+	prog_write_total = 2 + chainloader_size + RECOVERY_APPSBLENV_SIZE;
+	prog_total = prog_erase_total + prog_write_total;
+	prog_done = prog_erase_done;
+	recovery_service_runtime(status_leds);
+
+	ret = env_set("sbe1v1k_repartition_gpt", sbe1v1k_openwrt_gpt);
+	if (ret)
+		return ret;
+	prog_write_done = 1;
+	prog_done = prog_erase_done + prog_write_done;
+	recovery_service_runtime(status_leds);
+
+	ret = run_commandf("mmc dev %s", recovery_mmcdev());
+	if (ret) {
+		env_set("sbe1v1k_repartition_gpt", NULL);
+		return ret;
+	}
+
+	ret = run_commandf("gpt write mmc %s ${sbe1v1k_repartition_gpt}",
+			   recovery_mmcdev());
+	env_set("sbe1v1k_repartition_gpt", NULL);
+	if (ret)
+		return ret;
+	prog_write_done = 2;
+	prog_done = prog_erase_done + prog_write_done;
+	recovery_service_runtime(status_leds);
+
+	ret = recovery_verify_openwrt_gpt();
+	if (ret) {
+		printf("OpenWrt GPT verification failed after write: %d\n", ret);
+		return ret;
+	}
+	prog_write_done = 2;
+	prog_done = prog_erase_done + prog_write_done;
+	recovery_service_runtime(status_leds);
+
+	printf("Writing running chainloader FIT to '%s'...\n",
+	       RECOVERY_SBE1V1K_CHAINLOADER_PART);
+	ret = recovery_mmc_write_part(RECOVERY_SBE1V1K_CHAINLOADER_PART,
+				      status_leds, chainloader_fit,
+				      chainloader_size, 2);
+	if (ret)
+		return ret;
+
+	printf("Updating factory U-Boot environment in APPSBLENV...\n");
+	ret = recovery_write_appsblenv(status_leds, 2 + chainloader_size);
+	if (ret)
+		return ret;
+
+	prog_write_done = prog_write_total;
+	prog_done = prog_erase_done + prog_write_done;
+	recovery_service_runtime(status_leds);
+
+	printf("OpenWrt GPT layout written, chainloader installed, APPSBLENV updated. Upload firmware before reboot.\n");
+	return 0;
+}
+
+static int recovery_flash_mmc_firmware(struct recovery_status_led_ctrl *status_leds)
+{
+	const char *kernel_part = env_get("recovery_part_kernel") ?: "0#kernel";
+	const char *rootfs_part = env_get("recovery_part_rootfs") ?: "0#rootfs";
+	const char *data_part = env_get("recovery_part_data") ?: "0#rootfs_data";
+	struct recovery_firmware_image image;
+	size_t clear_size;
+	int ret;
+
+	ret = recovery_extract_firmware(recv_base, recv_off, &image);
+	if (ret)
+		return ret;
+
+	prog_phase = 2;
+	prog_done = 0;
+	prog_erase_done = 0;
+	prog_erase_total = 0;
+	prog_write_done = 0;
+	prog_write_total = image.kernel.size + image.rootfs.size;
+	prog_total = prog_write_total;
+
+	printf("Writing kernel payload to eMMC partition '%s'...\n",
+	       kernel_part);
+	ret = recovery_mmc_write_part(kernel_part, status_leds,
+				      image.kernel.data, image.kernel.size, 0);
+	if (ret)
+		return ret;
+
+	printf("Writing rootfs payload to eMMC partition '%s'...\n",
+	       rootfs_part);
+	ret = recovery_mmc_write_part(rootfs_part, status_leds,
+				      image.rootfs.data, image.rootfs.size,
+				      image.kernel.size);
+	if (ret)
+		return ret;
+
+	clear_size = env_get_hex("recovery_data_clear",
+				 RECOVERY_ROOTFS_DATA_CLEAR);
+	if (clear_size) {
+		printf("Clearing %lu bytes of eMMC data partition '%s'...\n",
+		       (ulong)clear_size, data_part);
+		ret = recovery_mmc_clear_part(data_part, status_leds, clear_size);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int recovery_flash_mmc_uboot(struct recovery_status_led_ctrl *status_leds)
+{
+	const char *uboot_part = env_get("recovery_part_uboot");
+	const char *uboot_alt_part = env_get("recovery_part_uboot_alt");
+	unsigned long max = recovery_uboot_limit();
+	int ret;
+
+	if (!uboot_part || !*uboot_part) {
+		printf("Chainloader eMMC target is not configured. Set recovery_part_uboot explicitly.\n");
+		return -EINVAL;
+	}
+
+	if (recv_off > max) {
+		printf("Chainloader image size %u exceeds limit %lu\n",
+		       recv_off, max);
+		return -EFBIG;
+	}
+
+	ret = fit_check_format(recv_base, recv_off);
+	if (ret) {
+		printf("Chainloader upload must be a raw FIT image (.itb): %d\n",
+		       ret);
+		return ret;
+	}
+
+	prog_phase = 2;
+	prog_done = 0;
+	prog_erase_done = 0;
+	prog_erase_total = 0;
+	prog_write_done = 0;
+	prog_write_total = recv_off;
+	prog_total = prog_write_total;
+
+	printf("Writing chainloader FIT to eMMC partition '%s'...\n",
+	       uboot_part);
+	ret = recovery_mmc_write_part(uboot_part, status_leds,
+				      recv_base, recv_off, 0);
+	if (ret)
+		return ret;
+
+	if (uboot_alt_part && *uboot_alt_part) {
+		printf("Writing chainloader FIT to alternate eMMC partition '%s'...\n",
+		       uboot_alt_part);
+		ret = recovery_mmc_write_part(uboot_alt_part, status_leds,
+					      recv_base, recv_off, 0);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int recovery_flash_mmc_target(enum upload_target tgt,
+				     struct recovery_status_led_ctrl *status_leds)
+{
+	switch (tgt) {
+	case TARGET_FIRMWARE:
+		return recovery_flash_mmc_firmware(status_leds);
+	case TARGET_UBOOT:
+		return recovery_flash_mmc_uboot(status_leds);
+	case TARGET_REPARTITION:
+		return recovery_repartition_factory(status_leds);
+	}
+
+	return -EINVAL;
+}
+
+static __maybe_unused const char *recovery_ubi_part(enum upload_target tgt)
 {
 	const char *part;
 
@@ -1195,6 +2473,52 @@ static int recovery_resolve_target(enum upload_target tgt,
 	if (!name)
 		name = recovery_default_target(tgt);
 
+	if (recovery_backend_is_mmc()) {
+		struct disk_partition kernel_part, rootfs_part;
+		struct blk_desc *desc;
+		const char *part;
+		int ret;
+
+		target->backend = RECOVERY_BACKEND_MMC;
+
+		if (tgt == TARGET_UBOOT) {
+			part = env_get(recovery_mmc_part_env(tgt));
+			if (!part || !*part) {
+				printf("Chainloader eMMC target is not configured. Set recovery_part_uboot explicitly.\n");
+				return -ENODEV;
+			}
+
+			ret = recovery_get_mmc_part(part, &target->blk,
+						    &target->part);
+			if (ret)
+				return ret;
+
+			target->name = part;
+			target->limit = recovery_mmc_part_bytes(&target->part);
+			if (target->limit > recovery_uboot_limit())
+				target->limit = recovery_uboot_limit();
+			target->cur_size = target->limit;
+			return 0;
+		}
+
+		part = env_get("recovery_part_kernel") ?: "0#kernel";
+		ret = recovery_get_mmc_part(part, &desc, &kernel_part);
+		if (ret)
+			return ret;
+
+		part = env_get("recovery_part_rootfs") ?: "0#rootfs";
+		ret = recovery_get_mmc_part(part, &desc, &rootfs_part);
+		if (ret)
+			return ret;
+
+		target->name = "mmc-sysupgrade";
+		target->blk = desc;
+		target->limit = recovery_mmc_part_bytes(&kernel_part) +
+				recovery_mmc_part_bytes(&rootfs_part);
+		target->cur_size = target->limit;
+		return 0;
+	}
+
 	mtd_probe_devices();
 
 	raw = env_get(recovery_raw_env(tgt));
@@ -1241,6 +2565,9 @@ static int recovery_resolve_target(enum upload_target tgt,
 			if (!raw)
 				raw = "nor0";
 			break;
+		case TARGET_REPARTITION:
+			raw = "nor0";
+			break;
 		}
 	}
 
@@ -1277,16 +2604,16 @@ static void recovery_release_target(struct recovery_target *target)
 
 static void recovery_service_runtime(struct recovery_status_led_ctrl *status_leds)
 {
-	struct udevice *udev = eth_get_dev();
+	struct udevice *udev = eth_get_current();
 	struct netif *netif = net_lwip_get_netif();
 
-	if (udev && netif)
+	if (udev && eth_is_active(udev) && netif)
 		net_lwip_rx(udev, netif);
 	recovery_status_led_poll(status_leds);
 	WATCHDOG_RESET();
 }
 
-static void recovery_ubi_progress(struct ubi_volume *vol, int done, int total)
+static __maybe_unused void recovery_ubi_progress(struct ubi_volume *vol, int done, int total)
 {
 	unsigned long long bytes_done = prog_erase_volume_base;
 
@@ -1358,7 +2685,7 @@ static int recovery_erase_mtd_region(struct mtd_info *mtd, loff_t ofs,
 	return 0;
 }
 
-static bool recovery_preserve_ubi_volume(const char *name)
+static __maybe_unused bool recovery_preserve_ubi_volume(const char *name)
 {
 	if (!name || !*name)
 		return true;
@@ -1419,7 +2746,7 @@ recovery_calc_forced_ubi_limit(struct recovery_target *target)
 #endif
 }
 
-static int recovery_create_ubi_volume(const char *name, size_t size, int vol_type)
+static __maybe_unused int recovery_create_ubi_volume(const char *name, size_t size, int vol_type)
 {
 #if IS_ENABLED(CONFIG_CMD_UBI) && IS_ENABLED(CONFIG_MTD_UBI)
 	struct ubi_mkvol_req req;
@@ -1460,7 +2787,7 @@ static int recovery_create_ubi_volume(const char *name, size_t size, int vol_typ
 #endif
 }
 
-static int recovery_remove_ubi_volume(const char *name)
+static __maybe_unused int recovery_remove_ubi_volume(const char *name)
 {
 #if IS_ENABLED(CONFIG_CMD_UBI) && IS_ENABLED(CONFIG_MTD_UBI)
 	struct ubi_volume_desc *desc;
@@ -1936,12 +3263,12 @@ int fs_open_custom(struct fs_file *file, const char *name)
         int ok = (prog_phase == 3);
         int err = (prog_phase == -1);
         int json_len = snprintf(json, sizeof(json),
-                                "{\"in_progress\":%d,\"done\":%u,\"total\":%u,\"erase_done\":%u,\"erase_total\":%u,\"write_done\":%u,\"write_total\":%u,\"ok\":%d,\"error\":%d,\"phase\":%d}\n",
+                                "{\"in_progress\":%d,\"done\":%u,\"total\":%u,\"erase_done\":%u,\"erase_total\":%u,\"write_done\":%u,\"write_total\":%u,\"ok\":%d,\"error\":%d,\"phase\":%d,\"reboot\":%d}\n",
                                 prog_phase > 0 && prog_phase < 3,
                                 (unsigned)prog_done, (unsigned)prog_total,
                                 (unsigned)prog_erase_done, (unsigned)prog_erase_total,
                                 (unsigned)prog_write_done, (unsigned)prog_write_total,
-                                ok, err, prog_phase);
+                                ok, err, prog_phase, prog_reboot);
         if (json_len < 0)
             return 0;
         if (json_len >= (int)sizeof(json))
@@ -2069,16 +3396,19 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
     prog_done = 0;
     prog_total = 0;
     prog_erase_done = 0;
-    prog_erase_total = 0;
-    prog_write_done = 0;
-    prog_write_total = 0;
-    current_force_recreate = false;
+	prog_erase_total = 0;
+	prog_write_done = 0;
+	prog_write_total = 0;
+	prog_reboot = 0;
+	current_force_recreate = false;
 
 	    /* Accept optional query parameters after the target path. */
     if (!strncmp(uri, "/upload/firmware", 16) && (uri[16] == '\0' || uri[16] == '?'))
         current_target = TARGET_FIRMWARE;
     else if (!strncmp(uri, "/upload/uboot", 13) && (uri[13] == '\0' || uri[13] == '?'))
         current_target = TARGET_UBOOT;
+    else if (!strncmp(uri, "/action/repartition", 19) && (uri[19] == '\0' || uri[19] == '?'))
+        current_target = TARGET_REPARTITION;
     else if (!strncmp(uri, "/upload", 7) && (uri[7] == '\0' || uri[7] == '?'))
         current_target = TARGET_FIRMWARE;
     else {
@@ -2092,7 +3422,15 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
          strstr(uri, "?force_recreate=1") || strstr(uri, "&force_recreate=1")))
         current_force_recreate = true;
 
-    {
+    if (current_target == TARGET_REPARTITION) {
+        if (content_len <= 0 || (ulong)content_len > RECOVERY_REPARTITION_MAX) {
+            prog_phase = -1;
+            printf("httpd: invalid repartition request length %d\n",
+                   content_len);
+            strlcpy(response_uri, "/fail.html", response_uri_len);
+            return ERR_ARG;
+        }
+    } else {
         ulong min = 0;
         ulong env_max = env_get_hex("recovery_max", 0);
         loff_t tmpofs = 0;
@@ -2104,8 +3442,8 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
         if (current_target == TARGET_FIRMWARE)
             min = RECOVERY_MIN_FIRMWARE_SIZE;
         else if (current_target == TARGET_UBOOT &&
-                 max > RECOVERY_MAX_UBOOT_SIZE)
-            max = RECOVERY_MAX_UBOOT_SIZE;
+                 max > recovery_uboot_limit())
+            max = recovery_uboot_limit();
 
         if (env_max && env_max < max)
             max = env_max; /* allow env to further cap */
@@ -2158,7 +3496,9 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
 
     post_ok = 1;
     /* Leave response_uri untouched here so the POST can complete normally. */
-    const char *tname = current_target == TARGET_FIRMWARE ? "firmware" : "uboot";
+    const char *tname = current_target == TARGET_FIRMWARE ? "firmware" :
+                        current_target == TARGET_UBOOT ? "uboot" :
+                        "repartition";
     printf("httpd: accepting upload of %u bytes for %s to 0x%08lx%s\n",
            recv_total, tname, (ulong)recv_base,
            current_force_recreate ? " (force recreate)" : "");
@@ -2229,6 +3569,20 @@ static int flash_image(struct recovery_status_led_ctrl *status_leds)
 		return -EINVAL;
 	}
 
+	if (current_target == TARGET_REPARTITION) {
+		prog_reboot = 0;
+		ret = recovery_repartition_factory(status_leds);
+		if (ret) {
+			printf("Factory repartition failed: %d\n", ret);
+			prog_phase = -1;
+			return ret;
+		}
+
+		prog_phase = 3;
+		printf("Factory repartition complete.\n");
+		return 0;
+	}
+
 	ret = recovery_resolve_target(current_target, &target);
 	if (ret) {
 		printf("No flash target found for upload type %d\n", current_target);
@@ -2246,6 +3600,21 @@ static int flash_image(struct recovery_status_led_ctrl *status_leds)
 		recovery_release_target(&target);
 		prog_phase = -1;
 		return -EFBIG;
+	}
+
+	if (target.backend == RECOVERY_BACKEND_MMC) {
+		ret = recovery_flash_mmc_target(current_target, status_leds);
+		recovery_release_target(&target);
+		if (ret) {
+			printf("eMMC flash failed: %d\n", ret);
+			prog_phase = -1;
+			return ret;
+		}
+
+		prog_phase = 3;
+		prog_reboot = 1;
+		printf("Flashing complete.\n");
+		return 0;
 	}
 
 	if (target.backend == RECOVERY_BACKEND_UBI) {
@@ -2332,6 +3701,7 @@ static int flash_image(struct recovery_status_led_ctrl *status_leds)
 		prog_done = prog_erase_total + recv_off;
 		recovery_release_target(&target);
 		prog_phase = 3;
+		prog_reboot = 1;
 		if (current_target == TARGET_FIRMWARE)
 			xr1710g_sync_factory();
 		printf("Flashing complete.\n");
@@ -2393,6 +3763,7 @@ static int flash_image(struct recovery_status_led_ctrl *status_leds)
 
 	recovery_release_target(&target);
 	prog_phase = 3;
+	prog_reboot = 1;
 	if (current_target == TARGET_FIRMWARE)
 		xr1710g_sync_factory();
 	printf("Flashing complete.\n");
@@ -2401,13 +3772,28 @@ static int flash_image(struct recovery_status_led_ctrl *status_leds)
 
 int run_http_recovery(void)
 {
-	struct udevice *udev;
-	struct netif *netif;
+	struct udevice *udev = NULL;
+	struct netif *netif = NULL;
 	struct recovery_led_ctrl leds;
 	struct recovery_status_led_ctrl status_leds;
 	struct recovery_dhcp_server dhcp;
 	bool use_status_leds = false;
+	bool use_link_leds = false;
+	bool eth_started = false;
+	const char *old_allow_no_link;
+	char *saved_allow_no_link = NULL;
+	ulong timeout_ms;
+	ulong start_ms;
 	int rc;
+
+	old_allow_no_link = env_get("eth_allow_no_link");
+	if (old_allow_no_link) {
+		saved_allow_no_link = strdup(old_allow_no_link);
+		if (!saved_allow_no_link)
+			return -ENOMEM;
+	}
+	env_set("eth_allow_no_link", "1");
+	recovery_board_http_acl(true);
 
 	recv_off = recv_total = 0;
 	post_ok = 0;
@@ -2415,53 +3801,65 @@ int run_http_recovery(void)
 	flash_request = 0;
 	reboot_request = 0;
 	memset(&leds, 0, sizeof(leds));
-	rc = recovery_status_led_init(&status_leds);
-	if (!rc) {
-		use_status_leds = true;
+	memset(&status_leds, 0, sizeof(status_leds));
+	memset(&dhcp, 0, sizeof(dhcp));
+
+	printf("HTTP recovery: preparing board runtime\n");
+	recovery_watchdog_poll();
+	if (recovery_board_is_sbe1v1k()) {
+		printf("Recovery LEDs disabled on SBE1V1K\n");
 	} else {
-		printf("Recovery status LEDs unavailable (%d), fallback to link LEDs\n",
-		       rc);
-		recovery_led_init(&leds);
+		rc = recovery_status_led_init(&status_leds);
+		if (!rc) {
+			use_status_leds = true;
+		} else {
+			printf("Recovery status LEDs unavailable (%d)\n", rc);
+			printf("Fallback to link LEDs\n");
+			recovery_led_init(&leds);
+			use_link_leds = true;
+		}
 	}
 	recovery_prepare_static_network();
 
+	printf("HTTP recovery: starting Ethernet\n");
+	recovery_watchdog_poll();
 	rc = net_lwip_eth_start();
 	if (rc < 0) {
 		printf("Failed to start Ethernet: %d\n", rc);
-		recovery_status_led_stop(&status_leds);
-		recovery_status_led_release(&status_leds);
-		recovery_led_ctrl_free(&leds);
-		return rc;
+		goto out;
 	}
+	eth_started = true;
+	recovery_watchdog_poll();
 
-	udev = eth_get_dev();
-	if (!udev) {
+	udev = eth_get_current();
+	if (!udev || !eth_is_active(udev)) {
 		printf("No active net device\n");
-		recovery_status_led_stop(&status_leds);
-		recovery_status_led_release(&status_leds);
-		recovery_led_ctrl_free(&leds);
-		eth_halt();
-		return -ENODEV;
+		rc = -ENODEV;
+		goto out;
 	}
 
+	printf("HTTP recovery: creating lwIP netif\n");
 	netif = net_lwip_new_netif(udev);
 	if (!netif) {
-		recovery_status_led_stop(&status_leds);
-		recovery_status_led_release(&status_leds);
-		recovery_led_ctrl_free(&leds);
-		eth_halt();
-		return -ENODEV;
+		rc = -ENODEV;
+		goto out;
 	}
+	recovery_watchdog_poll();
 
+	printf("HTTP recovery: starting DHCP helper\n");
 	rc = recovery_dhcp_server_init(&dhcp, netif);
 	if (rc)
 		printf("Failed to start recovery DHCP server: %d\n", rc);
 	else
 		net_lwip_set_recovery_dhcp_hook(recovery_dhcp_recv, &dhcp);
 
+	printf("HTTP recovery: starting HTTP server\n");
 	httpd_init();
 	printf("HTTP recovery server listening on http://%s/\n",
 	       ip4addr_ntoa(netif_ip4_addr(netif)));
+
+	timeout_ms = env_get_ulong("recovery_timeout", 10, 0) * 1000;
+	start_ms = get_timer(0);
 
 	while (1) {
 		if (tstc()) {
@@ -2476,17 +3874,21 @@ int run_http_recovery(void)
 		net_lwip_rx(udev, netif);
 		if (use_status_leds)
 			recovery_status_led_poll(&status_leds);
-		else
+		else if (use_link_leds)
 			recovery_led_poll(&leds);
 		if (flash_request) {
 			flash_request = 0;
 			printf("Upload done, flashing...\n");
 			rc = flash_image(&status_leds);
 			if (!rc) {
-				printf("Flashing complete. Rebooting in %dms...\n",
-				       REBOOT_DELAY_MS);
-				reboot_request = 0;
-				sys_timeout(REBOOT_DELAY_MS, reboot_delay_cb, NULL);
+				if (prog_reboot) {
+					printf("Flashing complete. Rebooting in %dms...\n",
+					       REBOOT_DELAY_MS);
+					reboot_request = 0;
+					sys_timeout(REBOOT_DELAY_MS, reboot_delay_cb, NULL);
+				} else {
+					printf("Action complete. Keeping recovery server running.\n");
+				}
 			} else {
 				printf("Flashing failed: %d. Keeping server running.\n",
 				       rc);
@@ -2494,15 +3896,30 @@ int run_http_recovery(void)
 		}
 		if (reboot_request)
 			do_reset(NULL, 0, 0, NULL);
-		WATCHDOG_RESET();
+		if (timeout_ms && !post_ok && !upload_done && !flash_request &&
+		    !reboot_request && prog_phase == 0 &&
+			get_timer(start_ms) >= timeout_ms) {
+			printf("HTTP recovery timeout after %lums\n", timeout_ms);
+			break;
+		}
+		recovery_watchdog_poll();
 	}
 
+	rc = 0;
+
+out:
 	recovery_dhcp_server_stop(&dhcp);
 	net_lwip_set_recovery_dhcp_hook(NULL, NULL);
-	net_lwip_remove_netif(netif);
-	eth_halt();
+	if (netif)
+		net_lwip_remove_netif(netif);
+	if (eth_started)
+		eth_halt();
 	recovery_status_led_stop(&status_leds);
 	recovery_status_led_release(&status_leds);
 	recovery_led_ctrl_free(&leds);
-	return 0;
+	recovery_board_http_acl(false);
+	env_set("eth_allow_no_link", saved_allow_no_link);
+	free(saved_allow_no_link);
+
+	return rc;
 }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>XR1710G Recovery</title>
+<title>SBE1V1K Recovery</title>
 <style>
 :root{
   --ink:#1a2530;
@@ -65,6 +65,7 @@ h1{
   margin-top:22px;
 }
 .force-row{
+  display:none;
   margin-top:14px;
   padding:12px 14px;
   border-radius:16px;
@@ -109,6 +110,9 @@ button{
 button.secondary{
   background:linear-gradient(90deg, var(--accent-2), #63b6c5);
 }
+button.danger{
+  background:linear-gradient(90deg, #a33b3b, #d36a4e);
+}
 button:disabled{opacity:.6;cursor:default}
 .targets{
   display:grid;
@@ -135,6 +139,28 @@ button:disabled{opacity:.6;cursor:default}
   color:var(--muted);
   line-height:1.5;
   font-size:14px;
+}
+.repartition{
+  margin-top:18px;
+  padding:16px;
+  border-radius:18px;
+  border:1px solid rgba(163,59,59,.18);
+  background:#fffafa;
+}
+.repartition h2{
+  margin:0 0 8px;
+  font-size:20px;
+}
+.repartition p{
+  margin:0 0 12px;
+  color:var(--muted);
+  line-height:1.5;
+  font-size:14px;
+}
+.repartition-grid{
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:10px;
 }
 .progress{
   display:none;
@@ -190,7 +216,7 @@ button:disabled{opacity:.6;cursor:default}
   overflow:auto;
 }
 @media (max-width:720px){
-  .toolbar,.targets{grid-template-columns:1fr}
+  .toolbar,.targets,.repartition-grid{grid-template-columns:1fr}
   h1{font-size:30px}
 }
 </style>
@@ -198,21 +224,21 @@ button:disabled{opacity:.6;cursor:default}
 <body>
 <div class="shell">
   <section class="hero">
-    <p class="eyebrow">XR1710G Recovery</p>
+    <p class="eyebrow">SBE1V1K Recovery</p>
     <h1>Upload firmware or chainloader</h1>
     <p class="lead">Recovery endpoint: <strong>192.168.255.1</strong></p>
-    <p class="note">`firmware` writes `ubi:fit`, `uboot` writes the raw chainloader slot.</p>
+    <p class="note">`firmware` writes eMMC `kernel`, `rootfs`, and clears `rootfs_data`; `uboot` writes a raw chainloader FIT to `chainloader`.</p>
 
     <div class="targets">
       <div class="target active" id="card-firmware">
         <h2>firmware</h2>
-        <p>OpenWrt FIT image</p>
+        <p>OpenWrt/QSDK sysupgrade image</p>
         <p>Must be at least 1024 KiB</p>
       </div>
       <div class="target" id="card-uboot">
         <h2>uboot</h2>
-        <p>`xr1710g-chainloader-slot.bin`</p>
-        <p>Must not exceed 1024 KiB</p>
+        <p>SBE1V1K raw chainloader FIT</p>
+        <p>Writes the dedicated `chainloader` partition</p>
       </div>
     </div>
 
@@ -230,7 +256,16 @@ button:disabled{opacity:.6;cursor:default}
         <input id="force-recreate" type="checkbox">
         Force wipe and recreate firmware volumes
       </label>
-      <p>Removes non-preserved UBI volumes before recreating `ubi:fit`.</p>
+      <p>Only used by UBI targets. Ignored by this eMMC recovery backend.</p>
+    </div>
+
+    <div class="repartition">
+      <h2>Factory eMMC migration</h2>
+      <p>Preserves factory p1-p26, including `0:HLOS` and `0:HLOS_1`; rebuilds p27+ as `chainloader`, `kernel`, `rootfs`, and `rootfs_data`.</p>
+      <div class="repartition-grid">
+        <input id="repart-token" type="text" autocomplete="off" placeholder="SBE1V1K_REPARTITION">
+        <button class="danger" id="repart-btn" onclick="repartition()">Repartition factory eMMC</button>
+      </div>
     </div>
 
     <div class="progress" id="progress">
@@ -269,6 +304,11 @@ var countdownStarted = false;
 var pollEpoch = 0;
 var pollOutcome = 0;
 
+function setControlsDisabled(disabled) {
+  document.getElementById("btn").disabled = disabled;
+  document.getElementById("repart-btn").disabled = disabled;
+}
+
 function log(msg) {
   var box = document.getElementById("log");
   box.textContent += msg + "\n";
@@ -285,9 +325,8 @@ function changeTarget() {
     "target" + (target === "uboot" ? " active" : "");
   document.getElementById("btn").className =
     target === "uboot" ? "secondary" : "";
-  forceWrap.style.display = target === "firmware" ? "block" : "none";
-  if (target !== "firmware")
-    forceBox.checked = false;
+  forceWrap.style.display = "none";
+  forceBox.checked = false;
 }
 
 function setBar(name, pct, detail, state) {
@@ -394,8 +433,13 @@ async function pollStatus(epoch) {
         clearInterval(pollTimer);
         pollTimer = null;
       }
-      log("Flash successful.");
-      startCountdown(3);
+      if (data.reboot) {
+        log("Flash successful.");
+        startCountdown(3);
+      } else {
+        log("Action successful. Recovery remains online; upload firmware next.");
+        setControlsDisabled(false);
+      }
     } else if (data.error) {
       pollOutcome = -1;
       if (pollTimer) {
@@ -403,7 +447,7 @@ async function pollStatus(epoch) {
         pollTimer = null;
       }
       log("Flash failed.");
-      document.getElementById("btn").disabled = false;
+      setControlsDisabled(false);
     }
   } catch (err) {
   }
@@ -416,7 +460,7 @@ async function upload() {
   var forceRecreate =
     target === "firmware" && document.getElementById("force-recreate").checked;
   var minFirmware = 1024 * 1024;
-  var maxUboot = 1024 * 1024;
+  var maxUboot = 4 * 1024 * 1024;
   var payload;
   var xhr = new XMLHttpRequest();
   if (!file) {
@@ -430,11 +474,11 @@ async function upload() {
   }
 
   if (target === "uboot" && file.size > maxUboot) {
-    log("Rejected: uboot image must not exceed 1024 KiB.");
+    log("Rejected: uboot image must not exceed 4096 KiB.");
     return;
   }
 
-  btn.disabled = true;
+  setControlsDisabled(true);
   showProgress(true);
   lastPhase = -1;
   pollEpoch++;
@@ -443,8 +487,6 @@ async function upload() {
   countdownStarted = false;
   document.getElementById("reboot-msg").style.display = "none";
   log("Uploading " + file.name + " to " + target + "...");
-  if (forceRecreate)
-    log("Force recreate enabled: non-preserved firmware volumes will be removed.");
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
@@ -455,7 +497,7 @@ async function upload() {
     payload = await file.arrayBuffer();
   } catch (err) {
     log("Failed to read file: " + err);
-    btn.disabled = false;
+    setControlsDisabled(false);
     return;
   }
 
@@ -476,7 +518,7 @@ async function upload() {
 
     if (xhr.status < 200 || xhr.status >= 300) {
       log("Server responded with HTTP " + xhr.status + ".");
-      btn.disabled = false;
+      setControlsDisabled(false);
       return;
     }
 
@@ -492,13 +534,65 @@ async function upload() {
       clearInterval(pollTimer);
       pollTimer = null;
     }
-    btn.disabled = false;
+    setControlsDisabled(false);
   });
 
   xhr.open("POST", "/upload/" + target + (forceRecreate ? "?recreate=1" : ""),
            true);
   xhr.setRequestHeader("Content-Type", "application/octet-stream");
   xhr.send(payload);
+}
+
+function repartition() {
+  var token = document.getElementById("repart-token").value;
+  var xhr = new XMLHttpRequest();
+
+  if (token !== "SBE1V1K_REPARTITION") {
+    log("Rejected: confirmation token does not match.");
+    return;
+  }
+
+  setControlsDisabled(true);
+  showProgress(true);
+  lastPhase = -1;
+  pollEpoch++;
+  pollOutcome = 0;
+  resetProgress();
+  countdownStarted = false;
+  document.getElementById("reboot-msg").style.display = "none";
+  log("Starting factory eMMC migration...");
+  setUploadProgress(100, "", true);
+
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  xhr.addEventListener("load", function() {
+    if (xhr.status < 200 || xhr.status >= 300) {
+      log("Server responded with HTTP " + xhr.status + ".");
+      setControlsDisabled(false);
+      return;
+    }
+
+    log("Request accepted. Checking migration status...");
+    var epoch = pollEpoch;
+    pollTimer = setInterval(function() { pollStatus(epoch); }, 500);
+    setTimeout(function() { pollStatus(epoch); }, 100);
+  });
+
+  xhr.addEventListener("error", function() {
+    log("Migration request failed.");
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    setControlsDisabled(false);
+  });
+
+  xhr.open("POST", "/action/repartition", true);
+  xhr.setRequestHeader("Content-Type", "text/plain");
+  xhr.send(token);
 }
 
 (async function() {

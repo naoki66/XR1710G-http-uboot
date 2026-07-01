@@ -290,7 +290,8 @@ int net_lwip_eth_start(void)
 
 static struct netif *new_netif(struct udevice *udev, bool with_ip)
 {
-	unsigned char enetaddr[ARP_HLEN];
+	struct eth_pdata *pdata;
+	unsigned char enetaddr[ARP_HLEN] = { 0 };
 	char hwstr[MAC_ADDR_STRLEN];
 	ip4_addr_t ip, mask, gw;
 	struct netif *netif;
@@ -314,7 +315,16 @@ static struct netif *new_netif(struct udevice *udev, bool with_ip)
 		if (get_udev_ipv4_info(udev, &ip, &mask, &gw) < 0)
 			return NULL;
 
-	eth_env_get_enetaddr_by_index("eth", dev_seq(udev), enetaddr);
+	pdata = dev_get_plat(udev);
+	if (!eth_env_get_enetaddr_by_index("eth", dev_seq(udev), enetaddr) &&
+	    pdata && is_valid_ethaddr(pdata->enetaddr))
+		memcpy(enetaddr, pdata->enetaddr, ARP_HLEN);
+
+	if (!is_valid_ethaddr(enetaddr)) {
+		printf("error: no valid MAC address for %s\n", udev->name);
+		return NULL;
+	}
+
 	ret = snprintf(hwstr, MAC_ADDR_STRLEN, "%pM",  enetaddr);
 	if (ret < 0 || ret >= MAC_ADDR_STRLEN)
 		return NULL;
@@ -328,6 +338,7 @@ static struct netif *new_netif(struct udevice *udev, bool with_ip)
 
 	string_to_enetaddr(hwstr, netif->hwaddr);
 	netif->hwaddr_len = ETHARP_HWADDR_LEN;
+	printf("lwIP netif MAC %s\n", hwstr);
 	debug("adding lwIP netif for %s with hwaddr:%s ip:%s ", udev->name,
 	      hwstr, ip4addr_ntoa(&ip));
 	debug("mask:%s ", ip4addr_ntoa(&mask));
