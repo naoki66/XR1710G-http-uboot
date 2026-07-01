@@ -68,7 +68,6 @@ static bool ipq_edma_debug_trace_enabled;
 static int ipq_eth_get_port_reset(struct udevice *dev, struct port_info *port,
 				  const char *port_name, const char *dev_name,
 				  struct reset_ctl *rst);
-static u32 ipq_eth_uniphy_type_from_id(u32 uniphy_id);
 static ulong ipq_eth_uniphy_parent_rate(struct port_info *port);
 static ulong ipq_eth_port_clk_data(struct port_info *port);
 
@@ -1331,13 +1330,10 @@ static void ppe_port_mux_set(phys_addr_t reg_base, struct port_info *port)
 {
 	union port_mux_ctrl_u port_mux_ctrl;
 	u8 id = port->id;
-	u8 pcs_sel = ipq_eth_uniphy_type_from_id(port->uniphy_id);
+	u8 pcs_sel = port->uniphy_type;
 	u8 mac_type = port->gmac_type;
 
-	if (id == 5 && port->uniphy_mode != PORT_WRAPPER_PSGMII)
-		pcs_sel = PORT5_MUX_PCS_UNIPHY1;
-
-	pr_debug("port id is: %d, mac_type is %d, pcs_sel is %d\n",
+	pr_debug("port id is: %d, mac_type is %d, uniphy_type is %d\n",
 		 id, mac_type, pcs_sel);
 
 	port_mux_ctrl.val = 0;
@@ -2823,14 +2819,6 @@ static u32 ipq_eth_default_uniphy_type(u32 port_id)
 		return 0;
 
 	return port_id == 5 ? 1 : 0;
-}
-
-static u32 ipq_eth_uniphy_type_from_id(u32 uniphy_id)
-{
-	if (!ipq_eth_is_ipq957x())
-		return 0;
-
-	return uniphy_id == 1 ? 1 : 0;
 }
 
 static bool ipq_eth_phy_parent_compatible(ofnode phy_node, const char *compat)
