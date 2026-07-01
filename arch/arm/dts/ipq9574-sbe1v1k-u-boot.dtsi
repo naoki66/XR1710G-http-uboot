@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: GPL-2.0+
+/*
+ * U-Boot overlay for Askey SBE1V1K chainloader.
+ */
+
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	/* Will be removed when SMEM parsing is updated. */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0x0 0x40000000>,
+		      <0x0 0x4a500000 0x0 0x00100000>;
+	};
+
+	aliases {
+		ethernet0 = &eth_switch;
+	};
+
+};
+
+&blsp1_uart2 {
+	clock-frequency = <1843200>;
+};
+
+&mdio {
+	clk_div = /bits/ 8 <15>;
+	status = "okay";
+};
+
+&qcom_ppe {
+	pinctrl-names = "default";
+	pinctrl-0 = <&phy_rst_pinmux>;
+	assigned-clocks = <&gcc GCC_NSSNOC_MEMNOC_BFDCD_CLK>,
+			  <&gcc GCC_QDSS_AT_CLK>,
+			  <&nsscc NSS_CC_CFG_CLK>,
+			  <&nsscc NSS_CC_PPE_CLK>,
+			  <&gcc GCC_UNIPHY_SYS_CLK>,
+			  <&gcc GCC_PCNOC_BFDCD_CLK>,
+			  <&gcc GCC_SYSTEM_NOC_BFDCD_CLK>;
+	assigned-clock-rates = <533000000>,
+			       <239000000>,
+			       <100000000>,
+			       <353000000>,
+			       <24000000>,
+			       <100000000>,
+			       <343000000>;
+	clocks = <&gcc GCC_MEM_NOC_NSSNOC_CLK>,
+		 <&gcc GCC_NSSCFG_CLK>,
+		 <&gcc GCC_NSSNOC_ATB_CLK>,
+		 <&gcc GCC_NSSNOC_MEM_NOC_1_CLK>,
+		 <&gcc GCC_NSSNOC_MEMNOC_CLK>,
+		 <&gcc GCC_NSSNOC_QOSGEN_REF_CLK>,
+		 <&gcc GCC_NSSNOC_TIMEOUT_REF_CLK>,
+		 <&nsscc GCC_CMN_12GPLL_AHB_CLK>,
+		 <&nsscc GCC_CMN_12GPLL_SYS_CLK>,
+		 <&gcc GCC_UNIPHY0_SYS_CLK>,
+		 <&gcc GCC_UNIPHY0_AHB_CLK>,
+		 <&gcc GCC_UNIPHY1_SYS_CLK>,
+		 <&gcc GCC_UNIPHY1_AHB_CLK>,
+		 <&gcc GCC_UNIPHY2_SYS_CLK>,
+		 <&gcc GCC_UNIPHY2_AHB_CLK>,
+		 <&gcc GCC_MDIO_AHB_CLK>,
+		 <&gcc GCC_NSSNOC_SNOC_CLK>,
+		 <&gcc GCC_NSSNOC_SNOC_1_CLK>,
+		 <&gcc GCC_MEM_NOC_SNOC_AXI_CLK>,
+		 <&nsscc NSS_CC_NSS_CSR_CLK>,
+		 <&nsscc NSS_CC_NSSNOC_NSS_CSR_CLK>,
+		 <&nsscc NSS_CC_PPE_SWITCH_IPE_CLK>,
+		 <&nsscc NSS_CC_PPE_SWITCH_CLK>,
+		 <&nsscc NSS_CC_PPE_SWITCH_CFG_CLK>,
+		 <&nsscc NSS_CC_CRYPTO_PPE_CLK>,
+		 <&nsscc NSS_CC_NSSNOC_PPE_CLK>,
+		 <&nsscc NSS_CC_NSSNOC_PPE_CFG_CLK>,
+		 <&nsscc NSS_CC_PPE_SWITCH_BTQ_CLK>;
+	clock-names = "gcc_mem_noc_nssnoc_clk",
+		      "gcc_nsscfg_clk",
+		      "gcc_nssnoc_atb_clk",
+		      "gcc_nssnoc_mem_noc_1_clk",
+		      "gcc_nssnoc_memnoc_clk",
+		      "gcc_nssnoc_qosgen_ref_clk",
+		      "gcc_nssnoc_timeout_ref_clk",
+		      "gcc_cmn_12gpll_ahb_clk",
+		      "gcc_cmn_12gpll_sys_clk",
+		      "gcc_uniphy0_sys_clk",
+		      "gcc_uniphy0_ahb_clk",
+		      "gcc_uniphy1_sys_clk",
+		      "gcc_uniphy1_ahb_clk",
+		      "gcc_uniphy2_sys_clk",
+		      "gcc_uniphy2_ahb_clk",
+		      "gcc_mdio_ahb_clk",
+		      "gcc_nssnoc_snoc_clk",
+		      "gcc_nssnoc_snoc_1_clk",
+		      "gcc_mem_noc_snoc_axi_clk",
+		      "nss_cc_nss_csr_clk",
+		      "nss_cc_nssnoc_nss_csr_clk",
+		      "nss_cc_ppe_switch_ipe_clk",
+		      "nss_cc_ppe_switch_clk",
+		      "nss_cc_ppe_switch_cfg_clk",
+		      "nss_cc_crypto_ppe_clk",
+		      "nss_cc_nssnoc_ppe_clk",
+		      "nss_cc_nssnoc_ppe_cfg_clk",
+		      "nss_cc_ppe_switch_btq_clk";
+	resets = <&gcc GCC_UNIPHY0_SOFT_RESET>,
+		 <&gcc GCC_UNIPHY0_XPCS_RESET>,
+		 <&gcc GCC_UNIPHY1_SOFT_RESET>,
+		 <&gcc GCC_UNIPHY1_XPCS_RESET>,
+		 <&gcc GCC_UNIPHY2_SOFT_RESET>,
+		 <&gcc GCC_UNIPHY2_XPCS_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT1_TX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT1_RX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT2_TX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT2_RX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT3_TX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT3_RX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT4_TX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT4_RX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT5_TX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT5_RX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT6_TX_RESET>,
+		 <&nsscc NSS_CC_UNIPHY_PORT6_RX_RESET>,
+		 <&nsscc NSS_CC_PPE_CFG_RESET>;
+	reset-names = "uniphy0_srst",
+		      "uniphy0_xrst",
+		      "uniphy1_srst",
+		      "uniphy1_xrst",
+		      "uniphy2_srst",
+		      "uniphy2_xrst",
+		      "uniphy_port1_tx",
+		      "uniphy_port1_rx",
+		      "uniphy_port2_tx",
+		      "uniphy_port2_rx",
+		      "uniphy_port3_tx",
+		      "uniphy_port3_rx",
+		      "uniphy_port4_tx",
+		      "uniphy_port4_rx",
+		      "uniphy_port5_tx",
+		      "uniphy_port5_rx",
+		      "uniphy_port6_tx",
+		      "uniphy_port6_rx",
+		      "nss_cc_ppe_cfg";
+	tdm_offset = <0xc000>;
+	tdm_mode = <0>;
+	no_tdm_reg = <118>;
+	bridge_mode;
+	status = "okay";
+};
+
+&sdhc_1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	resets = <&gcc GCC_SDCC_BCR>;
+	reset-names = "bcr_rst";
+};
+
+&tlmm {
+	phy_rst_pinmux: phy-rst-pins {
+		rtl8261be-rst-pins {
+			pins = "gpio60";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+
+		qca8081-rst-pins {
+			pins = "gpio52";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+	};
+
+};

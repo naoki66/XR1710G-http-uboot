@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+/*
+ * Backward-compatible name for local users that still build the board as
+ * qcom/ipq9574-sbe1v1k. OpenWrt carries this device as ipq9570-sbe1v1k.
+ */
+
+#include "ipq9570-sbe1v1k.dts"
