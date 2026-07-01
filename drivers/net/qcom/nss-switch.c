@@ -4987,14 +4987,22 @@ static int ipq_eth_get_port_reset(struct udevice *dev, struct port_info *port,
 }
 
 static bool ipq_eth_port_selected(struct port_info *port, int slot,
+				  bool active_port_set,
 				  ulong active_port, bool active_port_id_set,
 				  ulong active_port_id)
 {
 	if (!port)
 		return false;
 
-	if (active_port != CONFIG_ETH_MAX_MAC && active_port != slot)
-		return false;
+	if (active_port_set) {
+		if (port->from_dt_port) {
+			if (active_port != port->id)
+				return false;
+		} else if (active_port != CONFIG_ETH_MAX_MAC &&
+			   active_port != slot) {
+			return false;
+		}
+	}
 
 	if (active_port_id_set && active_port_id != port->id)
 		return false;
@@ -5006,6 +5014,7 @@ static int ipq_eth_refresh_link(struct ipq_eth_dev *priv, bool quiet)
 {
 	struct phy_device *phydev;
 	struct port_info *port = NULL;
+	bool active_port_set = env_get("active_port") != NULL;
 	bool active_port_id_set = env_get("active_port_id") != NULL;
 	ulong active_port = env_get_ulong("active_port", 10,
 					  CONFIG_ETH_MAX_MAC);
@@ -5022,7 +5031,8 @@ static int ipq_eth_refresh_link(struct ipq_eth_dev *priv, bool quiet)
 		if (!port->phydev && !priv->emulation)
 			continue;
 
-		if (!ipq_eth_port_selected(port, i, active_port,
+		if (!ipq_eth_port_selected(port, i, active_port_set,
+					   active_port,
 					   active_port_id_set, active_port_id)) {
 			ppe_port_bridge_txmac_set(priv->ppe.base,
 						  port->id, false);
@@ -8268,7 +8278,8 @@ U_BOOT_CMD(nss_debug, 8, 1, do_nss_debug,
 	   "  txmode defaults | txmode port <value> | txmode dmar <v1|v3> | txmode txctrlbase <qsdk|tso|raw> | txmode tdes4 <legacy|srcdst|dst|raw> | txmode passthrough <on|off> - set TX debug mode; defaults match QSDK\n"
 	   "  trace [on|off] - enable or disable verbose EDMA frame/ring logs\n"
 	   "  bridge_layout [auto|v2|v4] - set PORT_BRIDGE_CTRL mask layout; auto defaults to QSDK v2\n"
-	   "  env active_port=<slot> matches QSDK port filtering; active_port_id=<ppe-id> filters by PPE port");
+	   "  env active_port unset selects all ports; set value filters QSDK slots or ethernet-ports reg\n"
+	   "      active_port_id=<ppe-id> filters by PPE port");
 
 #ifdef CONFIG_PHY_AQUANTIA
 static int do_aqloadfw(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
