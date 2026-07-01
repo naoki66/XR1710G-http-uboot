@@ -27,6 +27,15 @@
 
 /* Generic PHY support and helper functions */
 
+__weak void board_net_phy_watchdog_kick(void)
+{
+}
+
+static void phy_watchdog_poll(void)
+{
+	board_net_phy_watchdog_kick();
+}
+
 /**
  * genphy_config_advert - sanitize and advertise auto-negotiation parameters
  * @phydev: target phy_device struct
@@ -265,8 +274,10 @@ int genphy_update_link(struct phy_device *phydev)
 			if ((i++ % 10) == 0)
 				printf(".");
 
+			phy_watchdog_poll();
 			mii_reg = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
 			mdelay(50);	/* 50 ms */
+			phy_watchdog_poll();
 		}
 		printf(" done\n");
 		phydev->link = 1;
@@ -839,6 +850,8 @@ struct phy_device *phy_find_by_mask(struct mii_dev *bus, uint phy_mask)
 static void phy_connect_dev(struct phy_device *phydev, struct udevice *dev,
 			    phy_interface_t interface)
 {
+	/* Soft Reset the PHY */
+	phy_reset(phydev);
 	if (phydev->dev && phydev->dev != dev) {
 		printf("%s:%d is connected to %s.  Reconnecting to %s\n",
 		       phydev->bus->name, phydev->addr,

@@ -260,6 +260,48 @@ config PHY_NXP_TJA11XX
 config PHY_REALTEK
 	bool "Realtek Ethernet PHYs support"
 
+config PHY_QCA_8X8X
+	bool "QCA Ethernet QCA808x/QCA838x support"
+	depends on PHYLIB
+	help
+	  Adds support for the Qualcomm QCA808x PHY and QCA838x switch.
+
+config PHY_QCA_8075
+	bool "QCA Ethernet QCA8075 support"
+	depends on PHYLIB
+	help
+	  Adds support for the Qualcomm QCA8075 PHY.
+
+config PHY_QCA_8081
+	bool "QCA Ethernet QCA8081 support"
+	depends on PHYLIB
+	help
+	  Adds support for the Qualcomm QCA8081 PHY.
+
+config PHY_QCA_81XX
+	bool "QCA Ethernet QCA81xx support"
+	depends on PHYLIB
+	help
+	  Adds support for the Qualcomm QCA81xx PHY.
+
+config PHY_QCA_8033
+	bool "QCA Ethernet QCA8033 support"
+	depends on PHYLIB
+	help
+	  Adds support for the Qualcomm QCA8033 PHY.
+
+config PHY_QCA_8337
+	bool "QCA Ethernet QCA8337 support"
+	depends on PHYLIB
+	help
+	  Adds support for the Qualcomm QCA8337 switch.
+
+config PHY_QCE_1204
+	bool "QCA Ethernet QCE1204 support"
+	depends on PHYLIB
+	help
+	  Adds support for the Qualcomm QCE1204 PHY.
+
 config RTL8211X_PHY_FORCE_MASTER
 	bool "Ethernet PHY RTL8211x: force 1000BASE-T master mode"
 	depends on PHY_REALTEK
