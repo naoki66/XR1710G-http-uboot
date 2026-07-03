@@ -5256,10 +5256,19 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	u32 txc_prod_before = 0, txd_cons_after = 0, txc_prod_after = 0;
 	uchar *skb;
 	phys_addr_t reg_base = ehw->iobase;
-	int i;
+	int i, tx_length;
 
 	if (!ipq_eth_has_active_link(priv))
 		ipq_eth_refresh_link_if_needed(priv, true);
+
+	if (length <= 0 || length > EDMA_TX_BUFF_SIZE) {
+		printf("EDMA TX invalid len=%d\n", length);
+		return -EINVAL;
+	}
+
+	tx_length = length;
+	if (tx_length < EDMA_TX_MIN_PKT_SIZE)
+		tx_length = EDMA_TX_MIN_PKT_SIZE;
 
 	txdesc_ring = ehw->txdesc_ring;
 	txcmpl_ring = ehw->txcmpl_ring;
@@ -5339,16 +5348,18 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	 * copy the packet
 	 */
 	memcpy(skb, packet, length);
+	if (tx_length > length)
+		memset(skb + length, 0, tx_length - length);
 
 	/*
 	 * Populate Tx descriptor
 	 */
-	txdesc->tdes5 = ((length << EDMA_TXDESC_DATA_LENGTH_SHIFT) &
+	txdesc->tdes5 = ((tx_length << EDMA_TXDESC_DATA_LENGTH_SHIFT) &
 			 EDMA_TXDESC_DATA_LENGTH_MASK);
 
 	if (ipq_edma_debug_trace() && ipq_edma_tx_log_count < 16) {
-		printf("EDMA TX len=%d dst_port=%u bridge=%d tdes4_mode=%s passthrough=%u tdes1=0x%08x tdes4=0x%08x tdes5=0x%08x tdes6=0x%08x ctrl=0x%08x prod=%u cons=%u\n",
-		       length, ppe->nbport, ppe->bridge_mode,
+		printf("EDMA TX len=%d hw_len=%d dst_port=%u bridge=%d tdes4_mode=%s passthrough=%u tdes1=0x%08x tdes4=0x%08x tdes5=0x%08x tdes6=0x%08x ctrl=0x%08x prod=%u cons=%u\n",
+		       length, tx_length, ppe->nbport, ppe->bridge_mode,
 		       ipq_edma_tdes4_mode_name(),
 		       ipq_edma_txdesc_passthrough_enabled() ? 1 : 0,
 		       txdesc->tdes1,
@@ -5360,7 +5371,7 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	ipq_eth_debug_log_frame("TX", packet, length, ppe->nbport,
 				txdesc->tdes4, txdesc->tdes5);
 
-	ipq_edma_flush_range(skb, length);
+	ipq_edma_flush_range(skb, tx_length);
 	ipq_edma_flush_range(txdesc, EDMA_TXDESC_DESC_SIZE);
 	wmb();
 

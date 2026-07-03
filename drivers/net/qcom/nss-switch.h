@@ -165,6 +165,12 @@ union uniphy_mode_ctrl_u {
 #define EDMA_TX_BUFF_SIZE			2048
 #define EDMA_RX_BUFF_SIZE			2048
 
+/*
+ * QSDK EDMA v2 pads Ethernet frames in hardware, but still rejects very small
+ * TX descriptors before the port padding stage.
+ */
+#define EDMA_TX_MIN_PKT_SIZE			49
+
 /* Number of byte in a descriptor is defined with below macros for each of
  * the rings respectively
  */
