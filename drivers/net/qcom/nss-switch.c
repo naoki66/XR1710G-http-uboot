@@ -23,6 +23,7 @@
 #include <dm/device-internal.h>
 #include <env.h>
 #include <linux/ctype.h>
+#include <linux/err.h>
 #include <part.h>
 #include <u-boot/crc.h>
 
@@ -132,6 +133,17 @@ static void ipq_edma_debug_reset_defaults(void)
 	ipq_edma_debug_tdes4_raw = 0;
 	ipq_edma_debug_passthrough = 0;
 	ipq_edma_debug_refresh_runtime();
+}
+
+static int ipq_eth_clk_set_rate(struct clk *clk, ulong rate)
+{
+	ulong new_rate;
+
+	new_rate = clk_set_rate(clk, rate);
+	if (IS_ERR_VALUE(new_rate))
+		return (int)new_rate;
+
+	return 0;
 }
 
 static enum ppe_bridge_ctrl_layout ppe_detect_bridge_ctrl_layout(void)
@@ -4862,7 +4874,7 @@ static int ipq_eth_port_set_up(struct ipq_eth_dev *priv,
 			goto fail;
 
 		clk.data = clk_data;
-		ret = clk_set_rate(&clk, rate);
+		ret = ipq_eth_clk_set_rate(&clk, rate);
 		if (ret && ret != -ENOSYS)
 			goto fail;
 		ret = clk_enable(&clk);
@@ -4888,7 +4900,7 @@ static int ipq_eth_port_set_up(struct ipq_eth_dev *priv,
 			goto fail;
 
 		clk.data = clk_data;
-		ret = clk_set_rate(&clk, rate);
+		ret = ipq_eth_clk_set_rate(&clk, rate);
 		if (ret && ret != -ENOSYS)
 			goto fail;
 		ret = clk_enable(&clk);
