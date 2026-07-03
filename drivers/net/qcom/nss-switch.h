@@ -806,6 +806,14 @@ static inline void edma_unified_write_masked(phys_addr_t addr, u32 val, struct e
 #define EDMA_TX_INITIAL_PROD_IDX		0x0
 
 #define EDMA_MISC_INTR_MASK			0xFF
+#define EDMA_MISC_AXI_RD_ERR_MASK		0x1
+#define EDMA_MISC_AXI_WR_ERR_MASK		0x2
+#define EDMA_MISC_RX_DESC_FIFO_FULL_MASK	0x4
+#define EDMA_MISC_RX_ERR_BUF_SIZE_MASK		0x8
+#define EDMA_MISC_TX_SRAM_FULL_MASK		0x10
+#define EDMA_MISC_TX_CMPL_BUF_FULL_MASK		0x20
+#define EDMA_MISC_DATA_LEN_ERR_MASK		0x40
+#define EDMA_MISC_TX_TIMEOUT_MASK		0x80
 #define EDMA_RX_PAYLOAD_OFFSET			0x0
 
 /* PPE register */

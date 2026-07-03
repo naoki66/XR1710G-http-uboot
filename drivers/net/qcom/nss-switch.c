@@ -1963,6 +1963,53 @@ static u32 ipq_edma_ring_add_raw(u32 idx, u32 add, u32 count)
 	return idx;
 }
 
+static const char *ipq_edma_misc_status_str(u32 status, char *buf, size_t len)
+{
+	struct {
+		u32 mask;
+		const char *name;
+	} bits[] = {
+		{ EDMA_MISC_AXI_RD_ERR_MASK, "AXI_RD_ERR" },
+		{ EDMA_MISC_AXI_WR_ERR_MASK, "AXI_WR_ERR" },
+		{ EDMA_MISC_RX_DESC_FIFO_FULL_MASK, "RX_DESC_FIFO_FULL" },
+		{ EDMA_MISC_RX_ERR_BUF_SIZE_MASK, "RX_ERR_BUF_SIZE" },
+		{ EDMA_MISC_TX_SRAM_FULL_MASK, "TX_SRAM_FULL" },
+		{ EDMA_MISC_TX_CMPL_BUF_FULL_MASK, "TX_CMPL_BUF_FULL" },
+		{ EDMA_MISC_DATA_LEN_ERR_MASK, "DATA_LEN_ERR" },
+		{ EDMA_MISC_TX_TIMEOUT_MASK, "TX_TIMEOUT" },
+	};
+	u32 unknown = status;
+	int i;
+
+	if (!len)
+		return "";
+
+	buf[0] = '\0';
+
+	for (i = 0; i < ARRAY_SIZE(bits); i++) {
+		if (!(status & bits[i].mask))
+			continue;
+
+		if (buf[0])
+			strlcat(buf, "|", len);
+		strlcat(buf, bits[i].name, len);
+		unknown &= ~bits[i].mask;
+	}
+
+	if (unknown) {
+		char tmp[16];
+
+		snprintf(tmp, sizeof(tmp), "%s0x%x", buf[0] ? "|" : "",
+			 unknown);
+		strlcat(buf, tmp, len);
+	}
+
+	if (!buf[0])
+		strlcat(buf, "none", len);
+
+	return buf;
+}
+
 static void ipq_eth_debug_dump(struct ipq_eth_dev *priv, const char *tag);
 static void ipq_eth_debug_dump_queue_detail(struct ipq_eth_dev *priv, u32 qid);
 static const char *ipq_eth_interface_name(phy_interface_t interface);
@@ -2156,6 +2203,8 @@ static void ipq_eth_debug_dump_summary(struct ipq_eth_dev *priv,
 	u32 txd_prod = 0, txd_cons = 0, txc_prod = 0, txc_cons = 0;
 	u32 rxd_int = 0, rxf_int = 0;
 	u32 q0_cfg, q0_cnt, qa_cfg, qa_cnt;
+	u32 misc;
+	char misc_buf[128];
 
 	if (!ehw->rxdesc_ring || !ehw->rxfill_ring) {
 		printf("NSS summary%s%s: EDMA rings are not initialized\n",
@@ -2210,6 +2259,7 @@ static void ipq_eth_debug_dump_summary(struct ipq_eth_dev *priv,
 	qa_cnt = readl(ppe->base + PPE_QUEUE_MANAGER_BASE_ADDR +
 		       PPE_QM_AC_UNI_QUEUE_CNT_TBL_ADDR +
 		       active_queue * PPE_QM_AC_UNI_QUEUE_CNT_TBL_INC);
+	misc = readl(ehw->iobase + EDMA_REG_MISC_INT_STAT);
 
 	printf("NSS summary%s%s: active_port=%u active_queue=%u bridge_layout=%s ",
 	       tag ? " " : "", tag ? tag : "", active_port, active_queue,
@@ -2220,6 +2270,8 @@ static void ipq_eth_debug_dump_summary(struct ipq_eth_dev *priv,
 	printf("txd%u=%u/%u txc%u=%u/%u ",
 	       txdesc->id, txd_prod, txd_cons,
 	       txcmpl->id, txc_prod, txc_cons);
+	printf("misc=%08x(%s) ", misc,
+	       ipq_edma_misc_status_str(misc, misc_buf, sizeof(misc_buf)));
 	printf("qid2rid0=%08x qid2rid64=%08x ",
 	       readl(ehw->iobase + EDMA_QID2RID_TABLE_MEM(0)),
 	       readl(ehw->iobase + EDMA_QID2RID_TABLE_MEM(64)));
@@ -2506,7 +2558,8 @@ static void ipq_eth_debug_dump(struct ipq_eth_dev *priv, const char *tag)
 {
 	struct ipq_edma_hw *ehw;
 	struct ppe_info *ppe;
-	u32 prod, cons;
+	u32 prod, cons, misc;
+	char misc_buf[128];
 	int i;
 
 	if (!priv)
@@ -2562,12 +2615,13 @@ static void ipq_eth_debug_dump(struct ipq_eth_dev *priv, const char *tag)
 	       readl(ppe->base + 0x063800 + (2 * 0x10)),
 	       readl(ppe->base + 0x063804 + (2 * 0x10)));
 
-	printf(" edma: mas=0x%08x port=0x%08x dmar=0x%08x misc=0x%08x/0x%08x\n",
+	misc = readl(ehw->iobase + EDMA_REG_MISC_INT_STAT);
+	printf(" edma: mas=0x%08x port=0x%08x dmar=0x%08x misc=0x%08x/0x%08x bits=%s\n",
 	       readl(ehw->iobase + EDMA_REG_MAS_CTRL),
 	       readl(ehw->iobase + EDMA_REG_PORT_CTRL),
 	       readl(ehw->iobase + EDMA_REG_DMAR_CTRL),
-	       readl(ehw->iobase + EDMA_REG_MISC_INT_STAT),
-	       readl(ehw->iobase + EDMA_REG_MISC_INT_MASK));
+	       misc, readl(ehw->iobase + EDMA_REG_MISC_INT_MASK),
+	       ipq_edma_misc_status_str(misc, misc_buf, sizeof(misc_buf)));
 	printf(" map: rxd2fill=%08x/%08x/%08x txd2cmpl=%08x/%08x/%08x/%08x/%08x/%08x\n",
 	       readl(ehw->iobase + EDMA_REG_RXDESC2FILL_MAP_0),
 	       readl(ehw->iobase + EDMA_REG_RXDESC2FILL_MAP_1),
@@ -3566,6 +3620,8 @@ static void ipq_edma_debug_dump_tx_regs(struct ipq_eth_dev *priv,
 	struct ipq_edma_hw *ehw = &priv->hw;
 	phys_addr_t reg_base = ehw->iobase;
 	u32 prod_raw, cons_raw, prod, cons, size;
+	u32 misc;
+	char misc_buf[128];
 	u32 i;
 
 	if (!ehw->txdesc_ring || !ehw->txcmpl_ring) {
@@ -3584,12 +3640,13 @@ static void ipq_edma_debug_dump_tx_regs(struct ipq_eth_dev *priv,
 	       ipq_edma_tdes4_mode_name(),
 	       ipq_edma_debug_tdes4_raw,
 	       ipq_edma_txdesc_passthrough_enabled() ? 1 : 0);
-	printf(" global: mas=0x%08x port=0x%08x dmar=0x%08x misc=0x%08x/0x%08x txq=0x%08x/0x%08x rxq=0x%08x axir=0x%08x axiw=0x%08x\n",
+	misc = readl(reg_base + EDMA_REG_MISC_INT_STAT);
+	printf(" global: mas=0x%08x port=0x%08x dmar=0x%08x misc=0x%08x/0x%08x bits=%s txq=0x%08x/0x%08x rxq=0x%08x axir=0x%08x axiw=0x%08x\n",
 	       readl(reg_base + EDMA_REG_MAS_CTRL),
 	       readl(reg_base + EDMA_REG_PORT_CTRL),
 	       readl(reg_base + EDMA_REG_DMAR_CTRL),
-	       readl(reg_base + EDMA_REG_MISC_INT_STAT),
-	       readl(reg_base + EDMA_REG_MISC_INT_MASK),
+	       misc, readl(reg_base + EDMA_REG_MISC_INT_MASK),
+	       ipq_edma_misc_status_str(misc, misc_buf, sizeof(misc_buf)),
 	       readl(reg_base + 0x20),
 	       readl(reg_base + 0x24),
 	       readl(reg_base + 0x3c),
