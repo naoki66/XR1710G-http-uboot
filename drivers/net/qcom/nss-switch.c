@@ -3456,7 +3456,7 @@ static void ipq_edma_rearm_tx_path(struct ipq_edma_hw *ehw)
 	struct ipq_edma_txdesc_ring *txdesc_ring;
 	struct ipq_edma_txcmpl_ring *txcmpl_ring;
 	phys_addr_t reg_base = ehw->iobase;
-	u32 data, prod_raw;
+	u32 data, cons_raw, prod_raw;
 	int i;
 
 	if (!ehw->txdesc_ring || !ehw->txcmpl_ring)
@@ -3488,7 +3488,10 @@ static void ipq_edma_rearm_tx_path(struct ipq_edma_hw *ehw)
 		txdesc_ring = &ehw->txdesc_ring[i];
 		ipq_edma_reset_txdesc_ring(ehw, txdesc_ring);
 		ipq_edma_program_txdesc_ring(ehw, txdesc_ring);
-		writel(EDMA_TX_INITIAL_PROD_IDX,
+		cons_raw = readl(reg_base +
+				 EDMA_REG_TXDESC_CONS_IDX(txdesc_ring->id)) &
+			   EDMA_TXDESC_CONS_IDX_MASK;
+		writel(cons_raw,
 		       reg_base + EDMA_REG_TXDESC_PROD_IDX(txdesc_ring->id));
 
 		data = 0;
@@ -4488,10 +4491,15 @@ static void ipq_edma_configure_txdesc_ring(struct ipq_edma_hw *ehw,
 					   struct ipq_edma_txdesc_ring *txdesc_ring)
 {
 	phys_addr_t reg_base = ehw->iobase;
+	u32 cons_raw;
 
 	ipq_edma_reset_txdesc_ring(ehw, txdesc_ring);
 	ipq_edma_program_txdesc_ring(ehw, txdesc_ring);
-	writel(EDMA_TX_INITIAL_PROD_IDX,
+
+	cons_raw = readl(reg_base +
+			 EDMA_REG_TXDESC_CONS_IDX(txdesc_ring->id)) &
+		   EDMA_TXDESC_CONS_IDX_MASK;
+	writel(cons_raw,
 	       reg_base + EDMA_REG_TXDESC_PROD_IDX(txdesc_ring->id));
 }
 
@@ -5219,8 +5227,8 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	struct ppe_info *ppe = &priv->ppe;
 	struct ipq_edma_txdesc_desc *txdesc;
 	struct ipq_edma_txdesc_ring *txdesc_ring;
-	u16 hw_next_to_use, hw_next_to_clean, chk_idx;
-	u32 data;
+	u16 desc_idx, clean_idx;
+	u32 data, hw_next_to_use, hw_next_to_clean, hw_next;
 	uchar *skb;
 	phys_addr_t reg_base = ehw->iobase;
 
@@ -5233,8 +5241,8 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	 */
 	data = readl(reg_base + EDMA_REG_TXDESC_PROD_IDX(txdesc_ring->id));
 
-	hw_next_to_use = ipq_edma_ring_index(data & EDMA_TXDESC_PROD_IDX_MASK,
-					     txdesc_ring->count);
+	hw_next_to_use = data & EDMA_TXDESC_PROD_IDX_MASK;
+	desc_idx = ipq_edma_ring_index(hw_next_to_use, txdesc_ring->count);
 
 	pr_debug("%s: txdesc_ring->id = %d\n", __func__, txdesc_ring->id);
 
@@ -5248,17 +5256,17 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 			EDMA_REG_TXDESC_CONS_IDX(txdesc_ring->id));
 
 	hw_next_to_clean = data & EDMA_TXDESC_CONS_IDX_MASK;
-	hw_next_to_clean = ipq_edma_ring_index(hw_next_to_clean,
-					       txdesc_ring->count);
-	pr_debug("%s: hw_next_to_use = %d hw_next_to_clean = %d\n",
-		 __func__, hw_next_to_use, hw_next_to_clean);
+	clean_idx = ipq_edma_ring_index(hw_next_to_clean, txdesc_ring->count);
+	pr_debug("%s: use=%u/%u clean=%u/%u\n", __func__,
+		 desc_idx, hw_next_to_use, clean_idx, hw_next_to_clean);
 
 	/*
-	 * Check for available Tx descriptor
+	 * Compare raw producer/consumer values because the chainloader can
+	 * inherit non-zero EDMA counters from XBL/vendor U-Boot.
 	 */
-	chk_idx = (hw_next_to_use + 1) & (txdesc_ring->count - 1);
-
-	if (chk_idx == hw_next_to_clean) {
+	hw_next = ipq_edma_ring_next_raw(hw_next_to_use,
+					 txdesc_ring->count);
+	if (hw_next == hw_next_to_clean) {
 		pr_info("netdev tx busy");
 		return -EBUSY;
 	}
@@ -5266,7 +5274,7 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	/*
 	 * Get Tx descriptor
 	 */
-	txdesc = EDMA_TXDESC_DESC(txdesc_ring, hw_next_to_use);
+	txdesc = EDMA_TXDESC_DESC(txdesc_ring, desc_idx);
 
 	txdesc->tdes2 = 0;
 	txdesc->tdes3 = 0;
@@ -5283,8 +5291,8 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 
 	pr_debug("%s: txdesc->tdes0 (buffer addr) = 0x%lx ", __func__, (uintptr_t)txdesc->tdes0);
 	pr_debug("txdesc->tdes1 (buffer addr) = 0x%lx ", (uintptr_t)txdesc->tdes1);
-	pr_debug("length = %d prod_idx = %d cons_idx = %d\n", length,
-		 hw_next_to_use, hw_next_to_clean);
+	pr_debug("length = %d prod_idx = %u/%u cons_idx = %u/%u\n", length,
+		 desc_idx, hw_next_to_use, clean_idx, hw_next_to_clean);
 
 	txdesc->tdes4 = ipq_edma_tx_tdes4_value(ppe);
 
@@ -5314,7 +5322,7 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 		       txdesc->tdes1,
 		       txdesc->tdes4, txdesc->tdes5, txdesc->tdes6,
 		       readl(reg_base + EDMA_REG_TXDESC_CTRL(txdesc_ring->id)),
-		       hw_next_to_use, hw_next_to_clean);
+		       desc_idx, clean_idx);
 		ipq_edma_tx_log_count++;
 	}
 	ipq_eth_debug_log_frame("TX", packet, length, ppe->nbport,
@@ -5327,7 +5335,7 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	/*
 	 * Update producer index
 	 */
-	hw_next_to_use = (hw_next_to_use + 1) & (txdesc_ring->count - 1);
+	hw_next_to_use = hw_next;
 
 	/*
 	 * make sure the hw_next_to_use is updated before the
