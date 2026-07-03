@@ -48,6 +48,7 @@ static u32 ipq_edma_rx_log_count;
 static u32 ipq_edma_tx_log_count;
 static u32 ipq_edma_rx_frame_log_count;
 static u32 ipq_edma_tx_frame_log_count;
+static u32 ipq_edma_tx_stall_dump_count;
 static ulong ipq_edma_debug_last_ms;
 static ulong ipq_eth_link_refresh_last_ms;
 
@@ -69,6 +70,7 @@ static bool ipq_edma_debug_trace_enabled;
 static int ipq_eth_get_port_reset(struct udevice *dev, struct port_info *port,
 				  const char *port_name, const char *dev_name,
 				  struct reset_ctl *rst);
+static int ipq_eth_reset_edma_node(struct udevice *dev);
 static ulong ipq_eth_uniphy_parent_rate(struct port_info *port);
 static ulong ipq_eth_port_clk_data(struct port_info *port);
 
@@ -3369,6 +3371,48 @@ static void ipq_edma_program_qid2rid_map(struct ipq_edma_hw *ehw)
 	}
 }
 
+static void ipq_edma_program_rxdesc2fill_map(struct ipq_edma_hw *ehw)
+{
+	struct ipq_edma_rxdesc_ring *rxdesc_ring;
+	phys_addr_t reg_base = ehw->iobase;
+	u32 data, i, reg, ring_id;
+
+	/*
+	 * Set RXDESC2FILL_MAP_xx reg.
+	 * There are 3 registers RXDESC2FILL_0, RXDESC2FILL_1 and RXDESC2FILL_2
+	 * 3 bits holds the rx fill ring mapping for each of the
+	 * rx descriptor ring.
+	 */
+	WRITE_REG_ARRAY(reg_base, EDMA_REG_RXDESC2FILL_MAP_0, 4, 0,
+			ehw->rx_map);
+
+	for (i = 0; i < ehw->rxdesc_rings; i++) {
+		rxdesc_ring = &ehw->rxdesc_ring[i];
+
+		ring_id = rxdesc_ring->id;
+		if (ring_id <= 9)
+			reg = EDMA_REG_RXDESC2FILL_MAP_0;
+		else if (ring_id <= 19)
+			reg = EDMA_REG_RXDESC2FILL_MAP_1;
+		else
+			reg = EDMA_REG_RXDESC2FILL_MAP_2;
+
+		pr_debug("Configure RXDESC:%u to use RXFILL:%u\n",
+			 ring_id, rxdesc_ring->rxfill->id);
+
+		data = readl(reg_base + reg);
+		data |= (rxdesc_ring->rxfill->id & 0x7) << ((ring_id % 10) * 3);
+		writel(data, reg_base + reg);
+	}
+}
+
+static void ipq_edma_program_static_maps(struct ipq_edma_hw *ehw)
+{
+	ipq_edma_program_txdesc2cmpl_map(ehw, ehw->tx_map);
+	ipq_edma_program_qid2rid_map(ehw);
+	ipq_edma_program_rxdesc2fill_map(ehw);
+}
+
 static void ipq_edma_prime_rxfill_ring(struct ipq_edma_hw *ehw,
 				       struct ipq_edma_rxfill_ring *rxfill_ring)
 {
@@ -4646,13 +4690,12 @@ int ipq_edma_hw_init(struct udevice *dev, struct ipq_eth_dev *eth)
 {
 	struct edma_config *config =
 			(struct edma_config *)dev_get_driver_data(dev);
-	struct ipq_edma_rxdesc_ring *rxdesc_ring = NULL;
 	struct ipq_edma_hw *ehw = &eth->hw;
 	phys_addr_t reg_base = ehw->iobase;
 	struct ppe_info *ppe = &eth->ppe;
 	int ret;
-	u32 i, reg, ring_id;
 	u32 data;
+	u32 i;
 
 	/*
 	 * PPE Init
@@ -4698,7 +4741,7 @@ int ipq_edma_hw_init(struct udevice *dev, struct ipq_eth_dev *eth)
 
 	ipq_edma_configure_rings(ehw);
 
-	ipq_edma_program_txdesc2cmpl_map(ehw, config->tx_map);
+	ipq_edma_program_static_maps(ehw);
 	if (ipq_edma_debug_trace())
 		printf("EDMA TXDESC2CMPL map: %08x/%08x/%08x/%08x/%08x/%08x\n",
 		       readl(reg_base + EDMA_REG_TXDESC2CMPL_MAP_0),
@@ -4707,39 +4750,6 @@ int ipq_edma_hw_init(struct udevice *dev, struct ipq_eth_dev *eth)
 		       readl(reg_base + EDMA_REG_TXDESC2CMPL_MAP_3),
 		       readl(reg_base + EDMA_REG_TXDESC2CMPL_MAP_4),
 		       readl(reg_base + EDMA_REG_TXDESC2CMPL_MAP_5));
-	ipq_edma_program_qid2rid_map(ehw);
-
-	/*
-	 * Set RXDESC2FILL_MAP_xx reg.
-	 * There are 3 registers RXDESC2FILL_0, RXDESC2FILL_1 and RXDESC2FILL_2
-	 * 3 bits holds the rx fill ring mapping for each of the
-	 * rx descriptor ring.
-	 */
-	WRITE_REG_ARRAY(reg_base, EDMA_REG_RXDESC2FILL_MAP_0, 4, 0,
-			config->rx_map);
-
-	for (i = 0; i < ehw->rxdesc_rings; i++) {
-		rxdesc_ring = &ehw->rxdesc_ring[i];
-
-		ring_id = rxdesc_ring->id;
-		if (ring_id >= 0 && ring_id <= 9)
-			reg = EDMA_REG_RXDESC2FILL_MAP_0;
-		else if ((ring_id >= 10) && (ring_id <= 19))
-			reg = EDMA_REG_RXDESC2FILL_MAP_1;
-		else
-			reg = EDMA_REG_RXDESC2FILL_MAP_2;
-
-		pr_debug("Configure RXDESC:%u to use RXFILL:%u\n",
-			 ring_id, rxdesc_ring->rxfill->id);
-
-		/*
-		 * Set the Rx fill descriptor ring number in the mapping
-		 * register.
-		 */
-		data = readl(reg_base + reg);
-		data |= (rxdesc_ring->rxfill->id & 0x7) << ((ring_id % 10) * 3);
-		writel(data, reg_base + reg);
-	}
 
 	for (i = 0; i < ehw->rxfill_rings; i++)
 		ipq_edma_prime_rxfill_ring(ehw, &ehw->rxfill_ring[i]);
@@ -5188,7 +5198,7 @@ static int ipq_eth_start(struct udevice *dev)
 {
 	struct ipq_eth_dev *priv = dev_get_priv(dev);
 	bool allow_no_link = env_get_yesno("eth_allow_no_link") == 1;
-	int linkup;
+	int linkup, ret;
 
 #ifdef CONFIG_ETH_LOW_MEM
 	dcache_disable();
@@ -5198,12 +5208,25 @@ static int ipq_eth_start(struct udevice *dev)
 	ipq_edma_tx_log_count = 0;
 	ipq_edma_rx_frame_log_count = 0;
 	ipq_edma_tx_frame_log_count = 0;
+	ipq_edma_tx_stall_dump_count = 0;
 	ipq_edma_debug_last_ms = 0;
 	ipq_eth_link_refresh_last_ms = 0;
 	ipq_edma_debug_refresh_runtime();
-	ipq_edma_program_tx_globals(&priv->hw);
+
+	/*
+	 * Chainloader boot can inherit a live EDMA block from the previous
+	 * firmware stage. Reset the EDMA child block on every net start, then
+	 * restore all ring registers and maps before enabling traffic.
+	 */
+	ret = ipq_eth_reset_edma_node(dev);
+	if (ret && ret != -ENOENT)
+		return ret;
+
+	ipq_edma_configure_rings(&priv->hw);
+	ipq_edma_program_static_maps(&priv->hw);
 	ipq_edma_rearm_rx_path(&priv->hw);
 	ipq_edma_rearm_tx_path(&priv->hw);
+	ipq_edma_program_tx_globals(&priv->hw);
 	writel(priv->hw.misc_intr_mask,
 	       priv->hw.iobase + EDMA_REG_MISC_INT_MASK);
 
@@ -5227,15 +5250,19 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	struct ppe_info *ppe = &priv->ppe;
 	struct ipq_edma_txdesc_desc *txdesc;
 	struct ipq_edma_txdesc_ring *txdesc_ring;
+	struct ipq_edma_txcmpl_ring *txcmpl_ring;
 	u16 desc_idx, clean_idx;
 	u32 data, hw_next_to_use, hw_next_to_clean, hw_next;
+	u32 txc_prod_before = 0, txd_cons_after = 0, txc_prod_after = 0;
 	uchar *skb;
 	phys_addr_t reg_base = ehw->iobase;
+	int i;
 
 	if (!ipq_eth_has_active_link(priv))
 		ipq_eth_refresh_link_if_needed(priv, true);
 
 	txdesc_ring = ehw->txdesc_ring;
+	txcmpl_ring = ehw->txcmpl_ring;
 	/*
 	 * Read TXDESC ring producer index
 	 */
@@ -5270,6 +5297,11 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 		pr_info("netdev tx busy");
 		return -EBUSY;
 	}
+
+	if (ipq_edma_debug_trace() && txcmpl_ring)
+		txc_prod_before = readl(reg_base +
+					EDMA_REG_TXCMPL_PROD_IDX(txcmpl_ring->id)) &
+				  EDMA_TXCMPL_PROD_IDX_MASK;
 
 	/*
 	 * Get Tx descriptor
@@ -5344,6 +5376,31 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 
 	writel(hw_next_to_use & EDMA_TXDESC_PROD_IDX_MASK,
 	       reg_base + EDMA_REG_TXDESC_PROD_IDX(txdesc_ring->id));
+
+	if (ipq_edma_debug_trace() && txcmpl_ring &&
+	    ipq_edma_tx_stall_dump_count < 2) {
+		for (i = 0; i < 10; i++) {
+			udelay(20);
+			txd_cons_after = readl(reg_base +
+					       EDMA_REG_TXDESC_CONS_IDX(txdesc_ring->id)) &
+					 EDMA_TXDESC_CONS_IDX_MASK;
+			txc_prod_after = readl(reg_base +
+					       EDMA_REG_TXCMPL_PROD_IDX(txcmpl_ring->id)) &
+					 EDMA_TXCMPL_PROD_IDX_MASK;
+			if (txd_cons_after != hw_next_to_clean ||
+			    txc_prod_after != txc_prod_before)
+				break;
+		}
+
+		if (txd_cons_after == hw_next_to_clean &&
+		    txc_prod_after == txc_prod_before) {
+			printf("EDMA TX stall: txd%u prod=%u cons=%u txc%u prod=%u after submit\n",
+			       txdesc_ring->id, hw_next_to_use, txd_cons_after,
+			       txcmpl_ring->id, txc_prod_after);
+			ipq_edma_debug_dump_tx_regs(priv, "stall");
+			ipq_edma_tx_stall_dump_count++;
+		}
+	}
 
 	pr_debug("%s: successful\n", __func__);
 
@@ -6031,6 +6088,16 @@ static int ipq_eth_prepare_pcs_nodes(struct ipq_eth_dev *priv)
 	return 0;
 }
 
+static int ipq_eth_reset_edma_node(struct udevice *dev)
+{
+	ofnode edma_node = dev_read_subnode(dev, "ethernet-dma");
+
+	if (!ofnode_valid(edma_node))
+		return -ENOENT;
+
+	return ipq_eth_reset_node(edma_node);
+}
+
 static int ipq_eth_prepare_edma_node(struct udevice *dev)
 {
 	ofnode edma_node = dev_read_subnode(dev, "ethernet-dma");
@@ -6039,15 +6106,15 @@ static int ipq_eth_prepare_edma_node(struct udevice *dev)
 	if (!ofnode_valid(edma_node))
 		return 0;
 
-	ret = ipq_eth_reset_node(edma_node);
-	if (ret)
-		return ret;
-
 	ret = ipq_eth_enable_node_clk(edma_node, "sys");
 	if (ret)
 		return ret;
 
-	return ipq_eth_enable_node_clk(edma_node, "apb");
+	ret = ipq_eth_enable_node_clk(edma_node, "apb");
+	if (ret)
+		return ret;
+
+	return ipq_eth_reset_edma_node(dev);
 }
 
 static int ipq_eth_probe(struct udevice *dev)

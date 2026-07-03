@@ -115,6 +115,8 @@ union uniphy_mode_ctrl_u {
 		__dest->max_rxfill_rings = __src->max_rxfill_rings;	\
 		__dest->max_ports = __src->ports;			\
 		__dest->start_ports = __src->start_ports;		\
+		__dest->tx_map = __src->tx_map;				\
+		__dest->rx_map = __src->rx_map;				\
 	} while (0)
 
 #define	WRITE_REG_ARRAY(_base, _offset, _size, _val, _count)		\
@@ -1621,6 +1623,8 @@ struct ipq_edma_hw {
 	u8 max_rxfill_rings;	/* Max rx fill rings */
 	u8 max_ports;		/* Max ports index  */
 	u8 start_ports;		/* Initial  ports index switch */
+	u8 tx_map;		/* Number of TXDESC2CMPL map registers */
+	u8 rx_map;		/* Number of RXDESC2FILL map registers */
 };
 
 struct port_info {
