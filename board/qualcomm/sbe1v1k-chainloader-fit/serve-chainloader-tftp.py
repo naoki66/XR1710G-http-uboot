@@ -135,6 +135,17 @@ def find_uboot_banners(payload):
     return banners
 
 
+def print_stock_uboot_commands(served_name, port):
+    print("Stock U-Boot temporary boot commands:")
+    if port != 69:
+        print(f"  setenv tftpdstp {port}")
+    print(f"  tftpboot 0x80000000 {served_name}")
+    if port != 69:
+        print("  setenv tftpdstp")
+    print("  bootm 0x80000000")
+    print("Do not run saveenv while testing this temporary TFTP path.")
+
+
 def serve_once(sock, payload, served_name, timeout, verbose):
     packet, addr = sock.recvfrom(2048)
     filename, mode, options = parse_rrq(packet)
@@ -217,6 +228,7 @@ def main():
     for banner in find_uboot_banners(payload):
         print(f"Embedded banner: {banner}")
     warn_system_tftp_state(args.name, payload_sha256, args.port)
+    print_stock_uboot_commands(args.name, args.port)
     sys.stdout.flush()
 
     while True:

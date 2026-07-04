@@ -42,10 +42,10 @@ At startup the helper prints the served FIT path, size, SHA256, and embedded
 U-Boot version banner. It also checks `/srv/tftp/sbe1v1k-chainloader.itb` when
 serving from a non-default port and warns if stock U-Boot's default TFTP port 69
 would see a missing or stale copy. Check the printed hash and banner before
-booting from stock U-Boot.
+booting from stock U-Boot. The helper also prints the exact temporary stock
+U-Boot commands for the selected port.
 
-Then, if stock U-Boot supports `tftpdstp`, use the temporary destination port
-without saving the environment:
+For the default helper port, those commands are:
 
 ```sh
 setenv tftpdstp 6969
@@ -53,6 +53,8 @@ tftpboot 0x80000000 sbe1v1k-chainloader.itb
 setenv tftpdstp
 bootm 0x80000000
 ```
+
+Do not save the environment while using the temporary high-port TFTP path.
 
 ## HTTP Migration
 
