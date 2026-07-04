@@ -8545,7 +8545,7 @@ U_BOOT_CMD(nss_debug, 8, 1, do_nss_debug,
 	   "  port <ppe-id>  - dump one PPE port and its queue\n"
 	   "  ports          - dump parsed DT port/PHY/PCS mapping\n"
 	   "  queue <qid>    - dump one PPE unicast queue\n"
-	   "  gmac <ppe-id>  - dump GMAC/XGMAC and MAC RX counters\n"
+	   "  gmac <ppe-id>  - dump GMAC/XGMAC and MAC RX/TX counters\n"
 	   "  uniphy <id>    - dump UNIPHY direct/CSR status\n"
 	   "  peek <ppe|edma|uniphy> <off> [count] - read raw registers\n"
 	   "  poke <ppe|edma|uniphy> <off> <value> - write one raw register\n"
