@@ -88,6 +88,41 @@ def send_error(sock, addr, code, message):
     sock.sendto(payload, addr)
 
 
+def warn_system_tftp_state(served_name, served_sha256, port):
+    if port == 69:
+        return
+
+    system_path = Path("/srv/tftp") / served_name
+    if not system_path.parent.exists():
+        return
+
+    if not system_path.exists():
+        print(
+            f"Warning: {system_path} is missing; stock U-Boot default "
+            "TFTP port 69 will not serve this FIT."
+        )
+        print(
+            f"Use tftpdstp={port} for this helper, or publish a file with "
+            f"SHA256 {served_sha256} to {system_path}."
+        )
+        return
+
+    try:
+        system_sha256 = hashlib.sha256(system_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        print(f"Warning: cannot hash {system_path}: {exc}")
+        return
+
+    if system_sha256 != served_sha256:
+        print(
+            f"Warning: {system_path} SHA256 {system_sha256} differs from "
+            f"served FIT {served_sha256}; default TFTP port 69 may boot "
+            "a stale image."
+        )
+    else:
+        print(f"System TFTP copy {system_path} matches SHA256 {served_sha256}")
+
+
 def serve_once(sock, payload, served_name, timeout, verbose):
     packet, addr = sock.recvfrom(2048)
     filename, mode, options = parse_rrq(packet)
@@ -160,12 +195,14 @@ def main():
 
     path = Path(args.file)
     payload = path.read_bytes()
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((args.host, args.port))
 
     print(f"Serving {path} as {args.name} on {args.host}:{args.port}")
-    print(f"Size {len(payload)} bytes, SHA256 {hashlib.sha256(payload).hexdigest()}")
+    print(f"Size {len(payload)} bytes, SHA256 {payload_sha256}")
+    warn_system_tftp_state(args.name, payload_sha256, args.port)
     sys.stdout.flush()
 
     while True:
