@@ -135,5 +135,9 @@ Default output:
 - `sbe1v1k-chainloader/sbe1v1k-chainloader-shim.bin`
 - `sbe1v1k-chainloader/sbe1v1k-chainloader-control.dtb`
 
+The build script prints SHA256 values for these artifacts and the embedded
+U-Boot banner found in the generated raw FIT. Check that banner before copying
+or serving the FIT.
+
 The `*-hlos.elf` wrapper is generated only for inspection and experiments with
 the original Askey loader format. The normal chainloader path is the raw FIT.

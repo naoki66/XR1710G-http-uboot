@@ -47,6 +47,30 @@ abspath() {
 	printf '%s/%s\n' "$dir" "$base"
 }
 
+print_artifact_info() {
+	python3 - "$@" <<'PY'
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+paths = [Path(arg) for arg in sys.argv[1:]]
+
+for path in paths:
+    data = path.read_bytes()
+    print(f"SHA256 {hashlib.sha256(data).hexdigest()}  {path}")
+
+    if path.name.endswith(".itb"):
+        banners = []
+        for match in re.finditer(rb"U-Boot [0-9][ -~]{1,120}", data):
+            banner = match.group(0).decode("ascii", "replace").strip()
+            if banner not in banners:
+                banners.append(banner)
+        for banner in banners:
+            print(f"Embedded banner: {banner}")
+PY
+}
+
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 srctree=$(CDPATH= cd -- "$script_dir/../../.." && pwd)
 objtree="$srctree"
@@ -135,3 +159,4 @@ echo "Generated FIT:  $output_fit"
 echo "Generated HLOS: $output_hlos"
 echo "Generated shim: $shim_bin"
 echo "Generated DTB:  $control_dtb"
+print_artifact_info "$output_fit" "$output_hlos" "$shim_bin" "$control_dtb" "$payload"
