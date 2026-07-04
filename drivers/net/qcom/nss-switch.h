@@ -560,6 +560,7 @@ static inline void edma_unified_write_masked(phys_addr_t addr, u32 val, struct e
 #define EDMA_REG_DMAR_CTRL		0x48
 #define EDMA_REG_MISC_INT_STAT		0x5c
 #define EDMA_REG_MISC_INT_MASK		0x60
+#define EDMA_REG_TX_TIMEOUT_THRESH	0x6c
 #define EDMA_REG_TXDESC2CMPL_MAP_0	0x8c
 #define EDMA_REG_TXDESC2CMPL_MAP_1	0x90
 #define EDMA_REG_TXDESC2CMPL_MAP_2	0x94

@@ -2744,10 +2744,11 @@ static void ipq_eth_debug_dump(struct ipq_eth_dev *priv, const char *tag)
 	       readl(ppe->base + 0x063804 + (2 * 0x10)));
 
 	misc = readl(ehw->iobase + EDMA_REG_MISC_INT_STAT);
-	printf(" edma: mas=0x%08x port=0x%08x dmar=0x%08x misc=0x%08x/0x%08x bits=%s\n",
+	printf(" edma: mas=0x%08x port=0x%08x dmar=0x%08x txto=0x%08x misc=0x%08x/0x%08x bits=%s\n",
 	       readl(ehw->iobase + EDMA_REG_MAS_CTRL),
 	       readl(ehw->iobase + EDMA_REG_PORT_CTRL),
 	       readl(ehw->iobase + EDMA_REG_DMAR_CTRL),
+	       readl(ehw->iobase + EDMA_REG_TX_TIMEOUT_THRESH),
 	       misc, readl(ehw->iobase + EDMA_REG_MISC_INT_MASK),
 	       ipq_edma_misc_status_str(misc, misc_buf, sizeof(misc_buf)));
 	printf(" map: rxd2fill=%08x/%08x/%08x txd2cmpl=%08x/%08x/%08x/%08x/%08x/%08x\n",
@@ -3774,10 +3775,11 @@ static void ipq_edma_debug_dump_tx_regs(struct ipq_eth_dev *priv,
 	       ipq_edma_debug_tdes4_raw,
 	       ipq_edma_txdesc_passthrough_enabled() ? 1 : 0);
 	misc = readl(reg_base + EDMA_REG_MISC_INT_STAT);
-	printf(" global: mas=0x%08x port=0x%08x dmar=0x%08x misc=0x%08x/0x%08x bits=%s txq=0x%08x/0x%08x rxq=0x%08x axir=0x%08x axiw=0x%08x\n",
+	printf(" global: mas=0x%08x port=0x%08x dmar=0x%08x txto=0x%08x misc=0x%08x/0x%08x bits=%s txq=0x%08x/0x%08x rxq=0x%08x axir=0x%08x axiw=0x%08x\n",
 	       readl(reg_base + EDMA_REG_MAS_CTRL),
 	       readl(reg_base + EDMA_REG_PORT_CTRL),
 	       readl(reg_base + EDMA_REG_DMAR_CTRL),
+	       readl(reg_base + EDMA_REG_TX_TIMEOUT_THRESH),
 	       misc, readl(reg_base + EDMA_REG_MISC_INT_MASK),
 	       ipq_edma_misc_status_str(misc, misc_buf, sizeof(misc_buf)),
 	       readl(reg_base + 0x20),
