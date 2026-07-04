@@ -29,6 +29,25 @@ that payload to the second-stage address can overwrite the still-running stock
 loader before it jumps to the shim. The shim copies `uboot-1` from the raw FIT
 itself after stock `bootm` has transferred control.
 
+If the system TFTP root is not writable, the helper script in this directory
+can serve the generated FIT from an unprivileged port:
+
+```sh
+board/qualcomm/sbe1v1k-chainloader-fit/serve-chainloader-tftp.py \
+	--host 0.0.0.0 \
+	--port 6969
+```
+
+Then, if stock U-Boot supports `tftpdstp`, use the temporary destination port
+without saving the environment:
+
+```sh
+setenv tftpdstp 6969
+tftpboot 0x80000000 sbe1v1k-chainloader.itb
+setenv tftpdstp
+bootm 0x80000000
+```
+
 ## HTTP Migration
 
 Open the recovery page at:
