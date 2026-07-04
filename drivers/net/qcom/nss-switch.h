@@ -801,6 +801,8 @@ static inline void edma_unified_write_masked(phys_addr_t addr, u32 val, struct e
 
 #define EDMA_TXCMPL_RING_INT_STATUS_MASK	0x3
 #define EDMA_TXCMPL_RETMODE_OPAQUE		0x0
+#define EDMA_TXCMPL_MORE_BIT_MASK		0x40000000
+#define EDMA_TXCOMP_RING_ERROR_MASK		0x7fffff
 #define EDMA_TX_NE_INT_EN			0x2
 #define EDMA_RX_NE_INT_EN			0x2
 #define EDMA_TX_INITIAL_PROD_IDX		0x0

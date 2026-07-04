@@ -46,6 +46,7 @@ uchar ipq_def_enetaddr[6] = {0x00, 0x03, 0x7F, 0xBA, 0xDB, 0xAD};
 int mac_speed_config[] = {10, 100, 1000, 10000, 2500, 5000};
 static u32 ipq_edma_rx_log_count;
 static u32 ipq_edma_tx_log_count;
+static u32 ipq_edma_txc_log_count;
 static u32 ipq_edma_rx_frame_log_count;
 static u32 ipq_edma_tx_frame_log_count;
 static u32 ipq_edma_tx_stall_dump_count;
@@ -2010,6 +2011,66 @@ static const char *ipq_edma_misc_status_str(u32 status, char *buf, size_t len)
 	return buf;
 }
 
+static const char *ipq_edma_txcmpl_error_str(u32 errors, char *buf,
+					     size_t len)
+{
+	static const char * const names[] = {
+		"IP_HDR",
+		"TSO",
+		"IP6_DATA_LEN",
+		"TCP_DATA_LEN",
+		"TCP_HDR_TOO_LONG",
+		"TCP_DATA_OFFSET_FIELD",
+		"UDP_DATA_LEN",
+		"UDP_HDR_TOO_LONG",
+		"UDP_LEN_FIELD",
+		"UDPLITE_DATA_LEN",
+		"UDPLITE_HDR_TOO_LONG",
+		"UDPLITE_CSUM_COV",
+		"IP_VERSION",
+		"L4_OFFSET",
+		"L4_OFFSET_LARGE",
+		"L3_OFFSET_LARGE",
+		"PAYLOAD_OFFSET_LARGE",
+		"CUST_CSUM_OFFSET_LARGE",
+		"RESERVE0",
+		"RESERVE1",
+		"RESERVE2",
+		"TSO_MSS",
+		"TSO_TCP",
+	};
+	u32 unknown = errors;
+	int i;
+
+	if (!len)
+		return "";
+
+	buf[0] = '\0';
+
+	for (i = 0; i < ARRAY_SIZE(names); i++) {
+		if (!(errors & BIT(i)))
+			continue;
+
+		if (buf[0])
+			strlcat(buf, "|", len);
+		strlcat(buf, names[i], len);
+		unknown &= ~BIT(i);
+	}
+
+	if (unknown) {
+		char tmp[16];
+
+		snprintf(tmp, sizeof(tmp), "%s0x%x", buf[0] ? "|" : "",
+			 unknown);
+		strlcat(buf, tmp, len);
+	}
+
+	if (!buf[0])
+		strlcat(buf, "none", len);
+
+	return buf;
+}
+
 static void ipq_eth_debug_dump(struct ipq_eth_dev *priv, const char *tag);
 static void ipq_eth_debug_dump_queue_detail(struct ipq_eth_dev *priv, u32 qid);
 static const char *ipq_eth_interface_name(phy_interface_t interface);
@@ -3919,7 +3980,9 @@ u32 ipq_edma_clean_tx(struct ipq_edma_hw *ehw,
 	u32 prod_idx, cons_idx;
 	u32 data;
 	u32 txcmpl_consumed = 0;
+	u32 errors;
 	uchar *skb;
+	char error_buf[256];
 	phys_addr_t reg_base = ehw->iobase;
 
 	/*
@@ -3945,6 +4008,21 @@ u32 ipq_edma_clean_tx(struct ipq_edma_hw *ehw,
 				(((uint64_t)(txcmpl_desc->tdes1 &
 				EDMA_TXDESC_BUF_HI_ADD_MASK) << 32) |
 				txcmpl_desc->tdes0));
+		errors = txcmpl_desc->tdes3 & EDMA_TXCOMP_RING_ERROR_MASK;
+
+		if (ipq_edma_debug_trace() && ipq_edma_txc_log_count < 16) {
+			printf("EDMA TXCMPL ring=%u idx=%u prod=%u opaque=0x%08x%08x word2=0x%08x more=%u word3=0x%08x errors=0x%08x(%s)\n",
+			       txcmpl_ring->id, desc_idx, prod_idx,
+			       txcmpl_desc->tdes1, txcmpl_desc->tdes0,
+			       txcmpl_desc->tdes2,
+			       !!(txcmpl_desc->tdes2 &
+				  EDMA_TXCMPL_MORE_BIT_MASK),
+			       txcmpl_desc->tdes3, errors,
+			       ipq_edma_txcmpl_error_str(errors,
+							 error_buf,
+							 sizeof(error_buf)));
+			ipq_edma_txc_log_count++;
+		}
 
 		if (unlikely(!skb))
 			pr_debug("Dropping empty tx completion: cons_idx:%u prod_idx:%u\n",
@@ -5263,6 +5341,7 @@ static int ipq_eth_start(struct udevice *dev)
 
 	ipq_edma_rx_log_count = 0;
 	ipq_edma_tx_log_count = 0;
+	ipq_edma_txc_log_count = 0;
 	ipq_edma_rx_frame_log_count = 0;
 	ipq_edma_tx_frame_log_count = 0;
 	ipq_edma_tx_stall_dump_count = 0;
