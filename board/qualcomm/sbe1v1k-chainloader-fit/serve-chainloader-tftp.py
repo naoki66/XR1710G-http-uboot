@@ -6,6 +6,7 @@ handles the common U-Boot options needed for tftpboot on a non-root port.
 """
 
 import argparse
+import hashlib
 import socket
 import struct
 import sys
@@ -164,7 +165,7 @@ def main():
     sock.bind((args.host, args.port))
 
     print(f"Serving {path} as {args.name} on {args.host}:{args.port}")
-    print(f"Size {len(payload)} bytes, SHA256 via: sha256sum {path}")
+    print(f"Size {len(payload)} bytes, SHA256 {hashlib.sha256(payload).hexdigest()}")
     sys.stdout.flush()
 
     while True:
