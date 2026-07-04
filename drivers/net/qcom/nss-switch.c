@@ -2877,6 +2877,8 @@ static void ipq_eth_debug_dump(struct ipq_eth_dev *priv, const char *tag)
 		struct ipq_edma_txcmpl_ring *ring = &ehw->txcmpl_ring[i];
 		struct ipq_edma_txcmpl_desc *desc;
 		u64 ba;
+		u32 errors;
+		char error_buf[256];
 
 		prod = ipq_edma_ring_index(readl(ehw->iobase +
 				EDMA_REG_TXCMPL_PROD_IDX(ring->id)) &
@@ -2897,9 +2899,12 @@ static void ipq_eth_debug_dump(struct ipq_eth_dev *priv, const char *tag)
 		       (unsigned long long)ba);
 		desc = EDMA_TXCMPL_DESC(ring, cons);
 		ipq_edma_invalidate_range(desc, EDMA_TXCMPL_DESC_SIZE);
-		printf(" txcmpl%d[%u]=%08x %08x %08x %08x\n",
+		errors = desc->tdes3 & EDMA_TXCOMP_RING_ERROR_MASK;
+		printf(" txcmpl%d[%u]=%08x %08x %08x %08x errors=0x%08x(%s)\n",
 		       ring->id, cons, desc->tdes0, desc->tdes1,
-		       desc->tdes2, desc->tdes3);
+		       desc->tdes2, desc->tdes3, errors,
+		       ipq_edma_txcmpl_error_str(errors, error_buf,
+						 sizeof(error_buf)));
 	}
 
 	printf(" qid2rid");
