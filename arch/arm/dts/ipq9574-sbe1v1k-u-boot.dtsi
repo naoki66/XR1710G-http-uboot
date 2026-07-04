@@ -160,6 +160,7 @@
 			function = "gpio";
 			drive-strength = <8>;
 			bias-pull-up;
+			output-high;
 		};
 
 		rtl8261be-rst-pins {
