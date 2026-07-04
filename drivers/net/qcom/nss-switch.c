@@ -2353,6 +2353,7 @@ static void ipq_eth_debug_dump_gmac(struct ipq_eth_dev *priv, u32 port_id)
 	phys_addr_t base = ppe->base;
 	u32 macid, gmac_base, xgmac_base;
 	u64 rx_good, rx_bad;
+	u64 tx_bytes;
 
 	if (!port_id) {
 		printf("GMAC debug needs PPE port id 1..6\n");
@@ -2382,16 +2383,28 @@ static void ipq_eth_debug_dump_gmac(struct ipq_eth_dev *priv, u32 port_id)
 	ipq_eth_debug_dump_words("gmac_ctrl", base, gmac_base, 16);
 	ipq_eth_debug_dump_words("gmac_rx_mib", base, gmac_base + 0x40, 8);
 	ipq_eth_debug_dump_words("gmac_rx_byte_mib", base, gmac_base + 0x80, 8);
+	ipq_eth_debug_dump_words("gmac_tx_mib", base, gmac_base + 0xa0, 24);
 
 	rx_good = readl(base + gmac_base + 0x84) |
 		  ((u64)readl(base + gmac_base + 0x88) << 32);
 	rx_bad = readl(base + gmac_base + 0x8c) |
 		 ((u64)readl(base + gmac_base + 0x90) << 32);
+	tx_bytes = readl(base + gmac_base + 0xcc) |
+		   ((u64)readl(base + gmac_base + 0xd0) << 32);
 	printf(" gmac_mib: rxbroad=%u rxmulti=%u rxfcs=%u rxgood_bytes=0x%llx rxbad_bytes=0x%llx\n",
 	       readl(base + gmac_base + 0x40),
 	       readl(base + gmac_base + 0x48),
 	       readl(base + gmac_base + 0x4c),
 	       (unsigned long long)rx_good, (unsigned long long)rx_bad);
+	printf(" gmac_tx_mib: txbroad=%u txmulti=%u txuni=%u txbytes=0x%llx txunderrun=%u txcoll=%u tx64=%u tx65_127=%u\n",
+	       readl(base + gmac_base + 0xa0),
+	       readl(base + gmac_base + 0xa8),
+	       readl(base + gmac_base + 0xf0),
+	       (unsigned long long)tx_bytes,
+	       readl(base + gmac_base + 0xac),
+	       readl(base + gmac_base + 0xd4),
+	       readl(base + gmac_base + 0xb0),
+	       readl(base + gmac_base + 0xb4));
 
 	ipq_eth_debug_dump_words("xgmac_ctrl", base, xgmac_base, 8);
 	ipq_eth_debug_dump_words("xgmac_rx_mib", base, xgmac_base + 0x900, 16);
