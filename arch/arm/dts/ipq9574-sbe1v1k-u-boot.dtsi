@@ -156,7 +156,7 @@
 &tlmm {
 	phy_rst_pinmux: phy-rst-pins {
 		rtl8261be-rst-pins {
-			pins = "gpio60";
+			pins = "gpio41";
 			function = "gpio";
 			drive-strength = <8>;
 			bias-pull-up;

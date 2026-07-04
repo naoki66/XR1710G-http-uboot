@@ -241,6 +241,23 @@
 };
 
 &tlmm {
+	/*
+	 * GPIO 60 is the shared hardware reset for the QCA8075 package, and the
+	 * board holds it asserted (low) at power-on. reset-gpios is NOT honored
+	 * on the package container node nor on the ethernet-phy@N nodes inside
+	 * it (only standalone PHY nodes get MDIO reset handling), so drive it
+	 * here as a gpio-hog. The hog is applied when the tlmm gpiochip
+	 * registers (very early), releasing the package well before the MDIO
+	 * bus is scanned; otherwise PHYs 18/19 read as "missing" and PPE port 3
+	 * fails to connect (-ENODEV), wedging the whole ethernet driver.
+	 */
+	qca8075_reset_hog {
+		gpio-hog;
+		gpios = <60 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "qca8075-reset-n";
+	};
+
 	gpio_keys_default: gpio-keys-default-state {
 		pins = "gpio54";
 		function = "gpio";
@@ -468,7 +485,7 @@
 	rtl8261be_0: ethernet-phy@5 {
 		compatible = "ethernet-phy-ieee802.3-c45";
 		reg = <0>;
-		reset-gpios = <&tlmm 60 GPIO_ACTIVE_LOW>;
+		reset-gpios = <&tlmm 41 GPIO_ACTIVE_LOW>;
 		reset-assert-us = <40000>;
 		reset-deassert-us = <150000>;
 	};
