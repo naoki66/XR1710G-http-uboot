@@ -7116,16 +7116,31 @@ U_BOOT_DRIVER(eth_ipq) = {
 	.flags = DM_FLAG_ALLOC_PRIV_DMA,
 };
 
-static struct ipq_eth_dev *ipq_eth_debug_get_priv(void)
+static struct ipq_eth_dev *ipq_eth_debug_get_priv_relaxed(bool require_active)
 {
 	struct udevice *dev = eth_get_current();
 
-	if (!dev || !eth_is_active(dev)) {
+	if (!dev) {
+		printf("Failed to find current nss-switch device\n");
+		return NULL;
+	}
+
+	if (!eth_is_active(dev)) {
+		if (!require_active) {
+			printf("nss-switch device is halted; dumping retained state\n");
+			return dev_get_priv(dev);
+		}
+
 		printf("Failed to find active nss-switch device\n");
 		return NULL;
 	}
 
 	return dev_get_priv(dev);
+}
+
+static struct ipq_eth_dev *ipq_eth_debug_get_priv(void)
+{
+	return ipq_eth_debug_get_priv_relaxed(true);
 }
 
 static phys_addr_t ipq_eth_debug_base(struct ipq_eth_dev *priv,
@@ -8423,7 +8438,9 @@ static int do_nss_debug(struct cmd_tbl *cmdtp, int flag, int argc,
 		}
 	}
 
-	priv = ipq_eth_debug_get_priv();
+	priv = (argc > 1 && !strcmp(argv[1], "snapshot")) ?
+	       ipq_eth_debug_get_priv_relaxed(false) :
+	       ipq_eth_debug_get_priv();
 	if (!priv)
 		return CMD_RET_FAILURE;
 
