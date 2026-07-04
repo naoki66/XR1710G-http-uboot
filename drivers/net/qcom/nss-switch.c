@@ -3839,6 +3839,8 @@ static void ipq_edma_debug_dump_tx_regs(struct ipq_eth_dev *priv,
 		struct ipq_edma_txcmpl_ring *ring = &ehw->txcmpl_ring[i];
 		struct ipq_edma_txcmpl_desc *desc;
 		u64 ba;
+		u32 errors;
+		char error_buf[256];
 
 		prod_raw = readl(reg_base + EDMA_REG_TXCMPL_PROD_IDX(ring->id)) &
 			   EDMA_TXCMPL_PROD_IDX_MASK;
@@ -3862,9 +3864,12 @@ static void ipq_edma_debug_dump_tx_regs(struct ipq_eth_dev *priv,
 
 		desc = EDMA_TXCMPL_DESC(ring, cons);
 		ipq_edma_invalidate_range(desc, EDMA_TXCMPL_DESC_SIZE);
-		printf(" txcmpl%u[cons%u]=%08x %08x %08x %08x\n",
+		errors = desc->tdes3 & EDMA_TXCOMP_RING_ERROR_MASK;
+		printf(" txcmpl%u[cons%u]=%08x %08x %08x %08x errors=0x%08x(%s)\n",
 		       ring->id, cons, desc->tdes0, desc->tdes1,
-		       desc->tdes2, desc->tdes3);
+		       desc->tdes2, desc->tdes3, errors,
+		       ipq_edma_txcmpl_error_str(errors, error_buf,
+						 sizeof(error_buf)));
 	}
 }
 
