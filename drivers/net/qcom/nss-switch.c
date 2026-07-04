@@ -2207,11 +2207,12 @@ static void ipq_eth_debug_dump_counter3(const char *name, phys_addr_t base,
 		       readl(base + off + 8));
 }
 
-static void ipq_eth_debug_dump_tx_path(struct ipq_eth_dev *priv)
+static void ipq_eth_debug_dump_tx_path_for_port(struct ipq_eth_dev *priv,
+						u32 port_id,
+						const char *port_field)
 {
 	struct ppe_info *ppe = &priv->ppe;
 	phys_addr_t base = ppe->base;
-	u32 port_id = ipq_eth_debug_active_port(priv);
 	u32 queue, macid, gmac_base;
 	u64 gmac_tx_bytes;
 	u32 bridge;
@@ -2227,8 +2228,8 @@ static void ipq_eth_debug_dump_tx_path(struct ipq_eth_dev *priv)
 	gmac_tx_bytes = readl(base + gmac_base + 0xcc) |
 			((u64)readl(base + gmac_base + 0xd0) << 32);
 
-	printf(" ppe_tx_path: active_port=%u queue=%u bridge=0x%08x txmac=%u promisc=%u stp=0x%08x uqm=0x%08x l0=0x%08x ac=0x%08x gmac=0x%08x/%08x/%08x txbytes=0x%llx\n",
-	       port_id, queue, bridge,
+	printf(" ppe_tx_path: %s=%u queue=%u bridge=0x%08x txmac=%u promisc=%u stp=0x%08x uqm=0x%08x l0=0x%08x ac=0x%08x gmac=0x%08x/%08x/%08x txbytes=0x%llx\n",
+	       port_field ?: "port", port_id, queue, bridge,
 	       !!(bridge & ppe_port_bridge_txmac_mask()),
 	       !!(bridge & ppe_port_bridge_promisc_mask()),
 	       readl(base + PPE_STP_BASE + port_id * 4),
@@ -2251,6 +2252,13 @@ static void ipq_eth_debug_dump_tx_path(struct ipq_eth_dev *priv)
 				   PPE_PTX_CSR_BASE_ADDR +
 				   PPE_QM_QUEUE_TX_COUNTER_TBL_ADDR +
 				   queue * PPE_QM_QUEUE_TX_COUNTER_TBL_INC);
+}
+
+static void ipq_eth_debug_dump_tx_path(struct ipq_eth_dev *priv)
+{
+	ipq_eth_debug_dump_tx_path_for_port(priv,
+					    ipq_eth_debug_active_port(priv),
+					    "active_port");
 }
 
 static const char *ipq_eth_debug_port_label(struct port_info *port)
@@ -3867,7 +3875,8 @@ static void ipq_eth_debug_dump_snapshot(struct ipq_eth_dev *priv, u32 port_id)
 	if (!port_id)
 		port_id = ipq_eth_debug_active_port(priv);
 
-	printf("NSS snapshot: requested_port=%u\n", port_id);
+	printf("NSS snapshot: requested_port=%u requested_queue=%u\n",
+	       port_id, ipq_eth_debug_queue_for_port(port_id));
 	ipq_eth_debug_dump_ports(priv);
 	ipq_eth_debug_dump_summary(priv, "snapshot");
 	ipq_edma_debug_dump_tx_regs(priv, "snapshot");
@@ -3883,6 +3892,7 @@ static void ipq_eth_debug_dump_snapshot(struct ipq_eth_dev *priv, u32 port_id)
 		return;
 	}
 
+	ipq_eth_debug_dump_tx_path_for_port(priv, port_id, "snapshot_port");
 	ipq_eth_debug_dump_port_detail(priv, port_id);
 	ipq_eth_debug_dump_gmac(priv, port_id);
 	ipq_eth_debug_dump_uniphy(priv, port->uniphy_id);
