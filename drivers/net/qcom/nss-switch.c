@@ -2207,6 +2207,52 @@ static void ipq_eth_debug_dump_counter3(const char *name, phys_addr_t base,
 		       readl(base + off + 8));
 }
 
+static void ipq_eth_debug_dump_tx_path(struct ipq_eth_dev *priv)
+{
+	struct ppe_info *ppe = &priv->ppe;
+	phys_addr_t base = ppe->base;
+	u32 port_id = ipq_eth_debug_active_port(priv);
+	u32 queue, macid, gmac_base;
+	u64 gmac_tx_bytes;
+	u32 bridge;
+
+	if (!port_id || port_id >= ppe->nos_iports)
+		return;
+
+	queue = ipq_eth_debug_queue_for_port(port_id);
+	macid = port_id - 1;
+	gmac_base = PPE_MAC_ENABLE + macid * 0x200;
+	bridge = readl(base + PPE_PORT_BRIDGE_CTRL_OFFSET +
+		       port_id * PORT_BRIDGE_CTRL_INC);
+	gmac_tx_bytes = readl(base + gmac_base + 0xcc) |
+			((u64)readl(base + gmac_base + 0xd0) << 32);
+
+	printf(" ppe_tx_path: active_port=%u queue=%u bridge=0x%08x txmac=%u promisc=%u stp=0x%08x uqm=0x%08x l0=0x%08x ac=0x%08x gmac=0x%08x/%08x/%08x txbytes=0x%llx\n",
+	       port_id, queue, bridge,
+	       !!(bridge & ppe_port_bridge_txmac_mask()),
+	       !!(bridge & ppe_port_bridge_promisc_mask()),
+	       readl(base + PPE_STP_BASE + port_id * 4),
+	       readl(base + PPE_QM_UQM_TBL +
+		     port_id * PPE_UCAST_QUEUE_MAP_TBL_INC),
+	       readl(base + PPE_L0_FLOW_MAP_TBL +
+		     queue * PPE_L0_FLOW_MAP_TBL_INC),
+	       readl(base + PPE_QUEUE_MANAGER_BASE_ADDR +
+		     PPE_QM_AC_UNI_QUEUE_CFG_TBL_ADDR +
+		     queue * PPE_QM_AC_UNI_QUEUE_CFG_TBL_INC),
+	       readl(base + gmac_base),
+	       readl(base + gmac_base + PPE_MAC_SPEED_OFF),
+	       readl(base + gmac_base + PPE_MAC_MIB_CTL_OFF),
+	       (unsigned long long)gmac_tx_bytes);
+	ipq_eth_debug_dump_counter3("ppe_port_tx", base,
+				   PPE_PTX_CSR_BASE_ADDR +
+				   PPE_PORT_TX_COUNTER_TBL_ADDR +
+				   port_id * PPE_PORT_TX_COUNTER_TBL_INC);
+	ipq_eth_debug_dump_counter3("ppe_queue_tx", base,
+				   PPE_PTX_CSR_BASE_ADDR +
+				   PPE_QM_QUEUE_TX_COUNTER_TBL_ADDR +
+				   queue * PPE_QM_QUEUE_TX_COUNTER_TBL_INC);
+}
+
 static const char *ipq_eth_debug_port_label(struct port_info *port)
 {
 	return port && port->label ? port->label : "-";
@@ -3738,6 +3784,7 @@ static void ipq_edma_debug_dump_tx_regs(struct ipq_eth_dev *priv,
 	       readl(reg_base + EDMA_REG_RXDESC2FILL_MAP_2),
 	       readl(reg_base + EDMA_QID2RID_TABLE_MEM(0)),
 	       readl(reg_base + EDMA_QID2RID_TABLE_MEM(64)));
+	ipq_eth_debug_dump_tx_path(priv);
 
 	for (i = 0; i < ehw->txdesc_rings; i++) {
 		struct ipq_edma_txdesc_ring *ring = &ehw->txdesc_ring[i];
