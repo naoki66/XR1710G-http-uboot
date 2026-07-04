@@ -481,6 +481,9 @@ static int qcom_reset_set(struct reset_ctl *rst, bool assert)
 	const struct qcom_reset_map *map;
 	u32 value;
 
+	if (data->reset_set)
+		return data->reset_set(rst, assert);
+
 	map = &data->resets[rst->id];
 
 	value = readl(base + map->reg);

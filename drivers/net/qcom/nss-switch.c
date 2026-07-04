@@ -1942,26 +1942,14 @@ static u16 ipq_edma_ring_index(u32 idx, u32 count)
 	return count ? idx % count : 0;
 }
 
-static u32 ipq_edma_ring_next_raw(u32 idx, u32 count)
+static u32 ipq_edma_ring_next(u32 idx, u32 count)
 {
-	u32 limit = count * 2;
-
-	idx++;
-	if (limit && idx == limit)
-		idx = 0;
-
-	return idx;
+	return ipq_edma_ring_index(idx + 1, count);
 }
 
-static u32 ipq_edma_ring_add_raw(u32 idx, u32 add, u32 count)
+static u32 ipq_edma_ring_add(u32 idx, u32 add, u32 count)
 {
-	u32 limit = count * 2;
-
-	idx += add;
-	if (limit)
-		idx %= limit;
-
-	return idx;
+	return ipq_edma_ring_index(idx + add, count);
 }
 
 static const char *ipq_edma_misc_status_str(u32 status, char *buf, size_t len)
@@ -3606,15 +3594,10 @@ static void ipq_edma_prime_rxfill_ring(struct ipq_edma_hw *ehw,
 {
 	phys_addr_t reg_base = ehw->iobase;
 	struct ipq_edma_rxfill_desc *rxfill_desc;
-	u32 cons_raw, prod_raw;
-	u32 reg_data;
+	u32 cons_raw = 0, prod_raw;
 	int i;
 
-	reg_data = readl(reg_base + EDMA_REG_RXFILL_CONS_IDX(rxfill_ring->id));
-	cons_raw = ipq_edma_ring_add_raw(reg_data & EDMA_RXFILL_CONS_IDX_MASK,
-					  0, rxfill_ring->count);
-	prod_raw = ipq_edma_ring_add_raw(cons_raw, rxfill_ring->count - 1,
-					 rxfill_ring->count);
+	prod_raw = rxfill_ring->count ? rxfill_ring->count - 1 : 0;
 
 	for (i = 0; i < rxfill_ring->count; i++) {
 		rxfill_desc = EDMA_RXFILL_DESC(rxfill_ring, i);
@@ -3638,57 +3621,12 @@ static void ipq_edma_prime_rxfill_ring(struct ipq_edma_hw *ehw,
 		       ipq_edma_ring_index(prod_raw, rxfill_ring->count), prod_raw);
 }
 
-static bool ipq_edma_reset_txdesc_ring(struct ipq_edma_hw *ehw,
-				       struct ipq_edma_txdesc_ring *ring)
-{
-	phys_addr_t reg_base = ehw->iobase;
-	u32 ctrl;
-	int timeout = 1000;
-
-	ctrl = readl(reg_base + EDMA_REG_TXDESC_CTRL(ring->id));
-	ctrl &= ~EDMA_TXDESC_TX_EN;
-	writel(ctrl, reg_base + EDMA_REG_TXDESC_CTRL(ring->id));
-
-	do {
-		ctrl = readl(reg_base + EDMA_REG_TXDESC_CTRL(ring->id));
-		if (!(ctrl & EDMA_TXDESC_TX_EN))
-			break;
-		udelay(10);
-	} while (--timeout);
-
-	if (!timeout) {
-		printf("EDMA TXDESC%u disable timeout ctrl=0x%08x\n",
-		       ring->id, ctrl);
-		return false;
-	}
-
-	timeout = 1000;
-	ctrl |= EDMA_TXDESC_TX_RESET;
-	writel(ctrl, reg_base + EDMA_REG_TXDESC_CTRL(ring->id));
-
-	do {
-		ctrl = readl(reg_base + EDMA_REG_TXDESC_CTRL(ring->id));
-		if (!(ctrl & EDMA_TXDESC_TX_RESET))
-			return true;
-		udelay(10);
-	} while (--timeout);
-
-	printf("EDMA TXDESC%u reset timeout ctrl=0x%08x prod=%u cons=%u\n",
-	       ring->id, ctrl,
-	       readl(reg_base + EDMA_REG_TXDESC_PROD_IDX(ring->id)) &
-	       EDMA_TXDESC_PROD_IDX_MASK,
-	       readl(reg_base + EDMA_REG_TXDESC_CONS_IDX(ring->id)) &
-	       EDMA_TXDESC_CONS_IDX_MASK);
-
-	return false;
-}
-
 static void ipq_edma_rearm_tx_path(struct ipq_edma_hw *ehw)
 {
 	struct ipq_edma_txdesc_ring *txdesc_ring;
 	struct ipq_edma_txcmpl_ring *txcmpl_ring;
 	phys_addr_t reg_base = ehw->iobase;
-	u32 data, cons_raw, prod_raw;
+	u32 data;
 	int i;
 
 	if (!ehw->txdesc_ring || !ehw->txcmpl_ring)
@@ -3705,11 +3643,7 @@ static void ipq_edma_rearm_tx_path(struct ipq_edma_hw *ehw)
 	for (i = 0; i < ehw->txcmpl_rings; i++) {
 		txcmpl_ring = &ehw->txcmpl_ring[i];
 		ipq_edma_program_txcmpl_ring(ehw, txcmpl_ring);
-		prod_raw = readl(reg_base +
-				 EDMA_REG_TXCMPL_PROD_IDX(txcmpl_ring->id)) &
-			   EDMA_TXCMPL_PROD_IDX_MASK;
-		writel(prod_raw,
-		       reg_base + EDMA_REG_TXCMPL_CONS_IDX(txcmpl_ring->id));
+		writel(0, reg_base + EDMA_REG_TXCMPL_CONS_IDX(txcmpl_ring->id));
 		writel(EDMA_TXCMPL_RETMODE_OPAQUE,
 		       reg_base + EDMA_REG_TXCMPL_CTRL(txcmpl_ring->id));
 		writel(ehw->txcmpl_intr_mask,
@@ -3718,12 +3652,8 @@ static void ipq_edma_rearm_tx_path(struct ipq_edma_hw *ehw)
 
 	for (i = 0; i < ehw->txdesc_rings; i++) {
 		txdesc_ring = &ehw->txdesc_ring[i];
-		ipq_edma_reset_txdesc_ring(ehw, txdesc_ring);
 		ipq_edma_program_txdesc_ring(ehw, txdesc_ring);
-		cons_raw = readl(reg_base +
-				 EDMA_REG_TXDESC_CONS_IDX(txdesc_ring->id)) &
-			   EDMA_TXDESC_CONS_IDX_MASK;
-		writel(cons_raw,
+		writel(EDMA_TX_INITIAL_PROD_IDX,
 		       reg_base + EDMA_REG_TXDESC_PROD_IDX(txdesc_ring->id));
 
 		data = 0;
@@ -3732,7 +3662,7 @@ static void ipq_edma_rearm_tx_path(struct ipq_edma_hw *ehw)
 		writel(data, reg_base + EDMA_REG_TXDESC_CTRL(txdesc_ring->id));
 
 		if (ipq_edma_debug_trace())
-			printf("EDMA TXDESC%u handoff prod=%u/%u cons=%u/%u ctrl=0x%08x\n",
+			printf("EDMA TXDESC%u init prod=%u/%u cons=%u/%u ctrl=0x%08x\n",
 			       txdesc_ring->id,
 			       ipq_edma_ring_index(readl(reg_base + EDMA_REG_TXDESC_PROD_IDX(txdesc_ring->id)) &
 						   EDMA_TXDESC_PROD_IDX_MASK,
@@ -4016,7 +3946,7 @@ int ipq_edma_alloc_rx_buffer(struct ipq_edma_hw *ehw,
 	 */
 	reg_data = readl(reg_base + EDMA_REG_RXFILL_PROD_IDX(rxfill_ring->id));
 
-	next = ipq_edma_ring_add_raw(reg_data & EDMA_RXFILL_PROD_IDX_MASK,
+	next = ipq_edma_ring_add(reg_data & EDMA_RXFILL_PROD_IDX_MASK,
 				     0, rxfill_ring->count);
 
 	/*
@@ -4024,12 +3954,12 @@ int ipq_edma_alloc_rx_buffer(struct ipq_edma_hw *ehw,
 	 */
 	reg_data = readl(reg_base + EDMA_REG_RXFILL_CONS_IDX(rxfill_ring->id));
 
-	cons = ipq_edma_ring_add_raw(reg_data & EDMA_RXFILL_CONS_IDX_MASK,
+	cons = ipq_edma_ring_add(reg_data & EDMA_RXFILL_CONS_IDX_MASK,
 				     0, rxfill_ring->count);
 
 	pr_debug("%s: prod_idx = %d cons_idx  = %d\n", __func__, next, cons);
 	while (1) {
-		counter = ipq_edma_ring_next_raw(next, rxfill_ring->count);
+		counter = ipq_edma_ring_next(next, rxfill_ring->count);
 
 		if (counter == cons) {
 			pr_debug("%s: counter == cons (%u)\n", __func__, cons);
@@ -4087,7 +4017,7 @@ u32 ipq_edma_clean_tx(struct ipq_edma_hw *ehw,
 {
 	struct ipq_edma_txcmpl_desc *txcmpl_desc;
 	u16 desc_idx;
-	u32 prod_idx, cons_idx;
+	u32 prod_raw, cons_raw, prod_idx, cons_idx;
 	u32 data;
 	u32 txcmpl_consumed = 0;
 	u32 errors;
@@ -4099,16 +4029,18 @@ u32 ipq_edma_clean_tx(struct ipq_edma_hw *ehw,
 	 * Get TXCMPL ring producer index
 	 */
 	data = readl(reg_base + EDMA_REG_TXCMPL_PROD_IDX(txcmpl_ring->id));
-	prod_idx = data & EDMA_TXCMPL_PROD_IDX_MASK;
+	prod_raw = data & EDMA_TXCMPL_PROD_IDX_MASK;
+	prod_idx = ipq_edma_ring_index(prod_raw, txcmpl_ring->count);
 
 	/*
 	 * Get TXCMPL ring consumer index
 	 */
 	data = readl(reg_base + EDMA_REG_TXCMPL_CONS_IDX(txcmpl_ring->id));
-	cons_idx = data & EDMA_TXCMPL_CONS_IDX_MASK;
+	cons_raw = data & EDMA_TXCMPL_CONS_IDX_MASK;
+	cons_idx = ipq_edma_ring_index(cons_raw, txcmpl_ring->count);
 
-	pr_debug("%s: prod_idx = %d cons_idx = %d\n",
-		 __func__, prod_idx, cons_idx);
+	pr_debug("%s: prod_idx = %u/%u cons_idx = %u/%u\n",
+		 __func__, prod_idx, prod_raw, cons_idx, cons_raw);
 	while (cons_idx != prod_idx) {
 		desc_idx = ipq_edma_ring_index(cons_idx, txcmpl_ring->count);
 		txcmpl_desc = EDMA_TXCMPL_DESC(txcmpl_ring, desc_idx);
@@ -4138,7 +4070,7 @@ u32 ipq_edma_clean_tx(struct ipq_edma_hw *ehw,
 			pr_debug("Dropping empty tx completion: cons_idx:%u prod_idx:%u\n",
 				 cons_idx, prod_idx);
 
-		cons_idx = ipq_edma_ring_next_raw(cons_idx, txcmpl_ring->count);
+		cons_idx = ipq_edma_ring_next(cons_idx, txcmpl_ring->count);
 
 		txcmpl_consumed++;
 	}
@@ -4168,7 +4100,7 @@ u32 ipq_edma_clean_rx(struct ipq_edma_hw *ehw,
 {
 	struct ipq_edma_rxdesc_desc *rxdesc_desc;
 	u16 desc_idx;
-	u32 prod_idx, cons_idx;
+	u32 prod_raw, cons_raw, prod_idx, cons_idx;
 	int src_port_num;
 	int pkt_length = 0;
 	u16 cleaned_count = 0;
@@ -4178,19 +4110,21 @@ u32 ipq_edma_clean_rx(struct ipq_edma_hw *ehw,
 	if (!rxdesc_ring || !rxdesc_ring->desc || !rxdesc_ring->count)
 		return 0;
 
-	cons_idx = readl(reg_base +
+	cons_raw = readl(reg_base +
 			EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->id)) &
 			EDMA_RXDESC_CONS_IDX_MASK;
+	cons_idx = ipq_edma_ring_index(cons_raw, rxdesc_ring->count);
 
 	/*
 	 * Read Rx ring producer index
 	 */
-	prod_idx = readl(reg_base +
+	prod_raw = readl(reg_base +
 		EDMA_REG_RXDESC_PROD_IDX(rxdesc_ring->id))
 		& EDMA_RXDESC_PROD_IDX_MASK;
+	prod_idx = ipq_edma_ring_index(prod_raw, rxdesc_ring->count);
 
-	pr_debug("%s: cons idx = %u, prod idx = %u\n",
-		 __func__, cons_idx, prod_idx);
+	pr_debug("%s: cons idx = %u/%u, prod idx = %u/%u\n",
+		 __func__, cons_idx, cons_raw, prod_idx, prod_raw);
 	if (cons_idx == prod_idx) {
 		pr_debug("%s: cons idx == prod idx (%u)\n", __func__, prod_idx);
 		goto skip;
@@ -4274,7 +4208,7 @@ next_rx_desc:
 	/*
 	 * Update consumer index
 	 */
-	cons_idx = ipq_edma_ring_next_raw(cons_idx, rxdesc_ring->count);
+	cons_idx = ipq_edma_ring_next(cons_idx, rxdesc_ring->count);
 
 skip:
 
@@ -4367,7 +4301,7 @@ static void ipq_edma_rearm_rx_path(struct ipq_edma_hw *ehw)
 	struct ipq_edma_rxdesc_ring *rxdesc_ring;
 	struct ipq_edma_rxfill_ring *rxfill_ring;
 	phys_addr_t reg_base = ehw->iobase;
-	u32 data, prod_raw;
+	u32 data;
 	int i;
 
 	if (!ehw->rxdesc_ring || !ehw->rxfill_ring)
@@ -4393,16 +4327,14 @@ static void ipq_edma_rearm_rx_path(struct ipq_edma_hw *ehw)
 
 	for (i = 0; i < ehw->rxdesc_rings; i++) {
 		rxdesc_ring = &ehw->rxdesc_ring[i];
-		prod_raw = readl(reg_base +
-				 EDMA_REG_RXDESC_PROD_IDX(rxdesc_ring->id)) &
-			   EDMA_RXDESC_PROD_IDX_MASK;
-		writel(prod_raw,
-		       reg_base + EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->id));
+		writel(0, reg_base + EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->id));
 		if (ipq_edma_debug_trace())
-			printf("EDMA RXDESC%u handoff cons=%u prod=%u\n",
+			printf("EDMA RXDESC%u init cons=%u prod=%u\n",
 			       rxdesc_ring->id,
 			       readl(reg_base + EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->id)) &
-			       EDMA_RXDESC_CONS_IDX_MASK, prod_raw);
+			       EDMA_RXDESC_CONS_IDX_MASK,
+			       readl(reg_base + EDMA_REG_RXDESC_PROD_IDX(rxdesc_ring->id)) &
+			       EDMA_RXDESC_PROD_IDX_MASK);
 	}
 
 	for (i = 0; i < ehw->rxfill_rings; i++) {
@@ -4780,15 +4712,10 @@ static void ipq_edma_configure_txdesc_ring(struct ipq_edma_hw *ehw,
 					   struct ipq_edma_txdesc_ring *txdesc_ring)
 {
 	phys_addr_t reg_base = ehw->iobase;
-	u32 cons_raw;
 
-	ipq_edma_reset_txdesc_ring(ehw, txdesc_ring);
 	ipq_edma_program_txdesc_ring(ehw, txdesc_ring);
 
-	cons_raw = readl(reg_base +
-			 EDMA_REG_TXDESC_CONS_IDX(txdesc_ring->id)) &
-		   EDMA_TXDESC_CONS_IDX_MASK;
-	writel(cons_raw,
+	writel(EDMA_TX_INITIAL_PROD_IDX,
 	       reg_base + EDMA_REG_TXDESC_PROD_IDX(txdesc_ring->id));
 }
 
@@ -4799,7 +4726,6 @@ static void ipq_edma_configure_txdesc_ring(struct ipq_edma_hw *ehw,
 static void ipq_edma_configure_txcmpl_ring(struct ipq_edma_hw *ehw,
 					   struct ipq_edma_txcmpl_ring *txcmpl_ring)
 {
-	u32 prod_idx;
 	phys_addr_t reg_base = ehw->iobase;
 
 	memset(txcmpl_ring->desc, 0,
@@ -4808,10 +4734,7 @@ static void ipq_edma_configure_txcmpl_ring(struct ipq_edma_hw *ehw,
 			     EDMA_TXCMPL_DESC_SIZE * txcmpl_ring->count);
 	ipq_edma_program_txcmpl_ring(ehw, txcmpl_ring);
 
-	prod_idx = readl(reg_base +
-			 EDMA_REG_TXCMPL_PROD_IDX(txcmpl_ring->id)) &
-		   EDMA_TXCMPL_PROD_IDX_MASK;
-	writel(prod_idx, reg_base + EDMA_REG_TXCMPL_CONS_IDX(txcmpl_ring->id));
+	writel(0, reg_base + EDMA_REG_TXCMPL_CONS_IDX(txcmpl_ring->id));
 }
 
 /*
@@ -4822,7 +4745,7 @@ static void ipq_edma_configure_rxdesc_ring(struct ipq_edma_hw *ehw,
 					   struct ipq_edma_rxdesc_ring *rxdesc_ring)
 {
 	phys_addr_t reg_base = ehw->iobase;
-	u32 data, prod_idx;
+	u32 data;
 	u64 base;
 
 	base = rxdesc_ring->dma;
@@ -4853,10 +4776,7 @@ static void ipq_edma_configure_rxdesc_ring(struct ipq_edma_hw *ehw,
 	}
 
 	writel(data, reg_base +	EDMA_REG_RXDESC_RING_SIZE(rxdesc_ring->id));
-	prod_idx = readl(reg_base +
-			 EDMA_REG_RXDESC_PROD_IDX(rxdesc_ring->id)) &
-		   EDMA_RXDESC_PROD_IDX_MASK;
-	writel(prod_idx, reg_base + EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->id));
+	writel(0, reg_base + EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->id));
 
 	/*
 	 * Enable ring. Set ret mode to 'opaque'.
@@ -5498,7 +5418,7 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	struct ipq_edma_txdesc_ring *txdesc_ring;
 	struct ipq_edma_txcmpl_ring *txcmpl_ring;
 	u16 desc_idx, clean_idx;
-	u32 data, hw_next_to_use, hw_next_to_clean, hw_next;
+	u32 data, prod_raw, cons_raw, hw_next_to_use, hw_next_to_clean, hw_next;
 	u32 txc_prod_before = 0, txd_cons_after = 0, txc_prod_after = 0;
 	uchar *skb;
 	phys_addr_t reg_base = ehw->iobase;
@@ -5523,8 +5443,9 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	 */
 	data = readl(reg_base + EDMA_REG_TXDESC_PROD_IDX(txdesc_ring->id));
 
-	hw_next_to_use = data & EDMA_TXDESC_PROD_IDX_MASK;
-	desc_idx = ipq_edma_ring_index(hw_next_to_use, txdesc_ring->count);
+	prod_raw = data & EDMA_TXDESC_PROD_IDX_MASK;
+	hw_next_to_use = ipq_edma_ring_index(prod_raw, txdesc_ring->count);
+	desc_idx = hw_next_to_use;
 
 	pr_debug("%s: txdesc_ring->id = %d\n", __func__, txdesc_ring->id);
 
@@ -5537,16 +5458,14 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 	data = readl(reg_base +
 			EDMA_REG_TXDESC_CONS_IDX(txdesc_ring->id));
 
-	hw_next_to_clean = data & EDMA_TXDESC_CONS_IDX_MASK;
-	clean_idx = ipq_edma_ring_index(hw_next_to_clean, txdesc_ring->count);
+	cons_raw = data & EDMA_TXDESC_CONS_IDX_MASK;
+	hw_next_to_clean = ipq_edma_ring_index(cons_raw, txdesc_ring->count);
+	clean_idx = hw_next_to_clean;
 	pr_debug("%s: use=%u/%u clean=%u/%u\n", __func__,
-		 desc_idx, hw_next_to_use, clean_idx, hw_next_to_clean);
+		 desc_idx, prod_raw, clean_idx, cons_raw);
 
-	/*
-	 * Compare raw producer/consumer values because the chainloader can
-	 * inherit non-zero EDMA counters from XBL/vendor U-Boot.
-	 */
-	hw_next = ipq_edma_ring_next_raw(hw_next_to_use,
+	/* EDMA ring indices are valid only inside the configured ring size. */
+	hw_next = ipq_edma_ring_next(hw_next_to_use,
 					 txdesc_ring->count);
 	if (hw_next == hw_next_to_clean) {
 		pr_info("netdev tx busy");
@@ -5644,12 +5563,16 @@ static int ipq_eth_send(struct udevice *dev, void *packet, int length)
 			txc_prod_after = readl(reg_base +
 					       EDMA_REG_TXCMPL_PROD_IDX(txcmpl_ring->id)) &
 					 EDMA_TXCMPL_PROD_IDX_MASK;
-			if (txd_cons_after != hw_next_to_clean ||
+			if (ipq_edma_ring_index(txd_cons_after,
+						txdesc_ring->count) !=
+			    hw_next_to_clean ||
 			    txc_prod_after != txc_prod_before)
 				break;
 		}
 
-		if (txd_cons_after == hw_next_to_clean &&
+		if (ipq_edma_ring_index(txd_cons_after,
+					txdesc_ring->count) ==
+		    hw_next_to_clean &&
 		    txc_prod_after == txc_prod_before) {
 			printf("EDMA TX stall: txd%u prod=%u cons=%u txc%u prod=%u after submit\n",
 			       txdesc_ring->id, hw_next_to_use, txd_cons_after,
@@ -8641,7 +8564,7 @@ U_BOOT_CMD(nss_debug, 8, 1, do_nss_debug,
 	   "  txmap [txdesc-ring txcmpl-ring] - dump or set TXDESC to TXCMPL mapping\n"
 	   "  txregs        - dump EDMA TX ring/global registers\n"
 	   "  snapshot [ppe-id] - dump ports, summary, TX regs, PPE port, GMAC, and UNIPHY\n"
-	   "  rearm         - manually re-arm EDMA RX/TX rings for XBL handoff experiments\n"
+	   "  rearm         - reset EDMA RX/TX rings to ring-size-local indices\n"
 	   "  txfix         - reprogram EDMA TX rings/map/global registers\n"
 	   "  txkick [toggle] - rewrite TX producer and optionally toggle TX_EN\n"
 	   "  txmode defaults | txmode port <value> | txmode dmar <v1|v3> | txmode txctrlbase <qsdk|tso|raw> | txmode tdes4 <legacy|srcdst|dst|raw> | txmode passthrough <on|off> - set TX debug mode; defaults match QSDK\n"

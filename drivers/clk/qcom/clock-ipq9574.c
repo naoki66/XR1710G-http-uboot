@@ -9,10 +9,12 @@
 #include <linux/types.h>
 #include <clk-uclass.h>
 #include <dm.h>
+#include <errno.h>
 #include <linux/delay.h>
 #include <asm/io.h>
 #include <linux/bug.h>
 #include <linux/bitops.h>
+#include <reset-uclass.h>
 #include <dt-bindings/clock/qcom,ipq9574-gcc.h>
 #include <dt-bindings/reset/qcom,ipq9574-gcc.h>
 
@@ -186,6 +188,8 @@ static bool fdone;
 #define GCC_USB0_MOCK_UTMI_CMD_RCGR	(0x2C02C)
 #define GCC_USB0_AUX_CMD_RCGR		(0x2C018)
 #define GCC_USB0_MASTER_CMD_RCGR	(0x2C004)
+#define NSS_CC_PPE_RESET_REG		0x28A08
+#define NSS_CC_PPE_EDMA_RESET_MASK	(BIT(15) | BIT(16))
 
 static int calc_div_for_nss_port_clk(struct clk *clk, ulong rate,
 				     int *div, int *cdiv)
@@ -923,6 +927,39 @@ static const struct qcom_reset_map ipq9574_gcc_resets[] = {
 	[GCC_USB3PHY_0_PHY_BCR]			= {0x2C070, 0},
 };
 
+static int ipq9574_reset_set(struct reset_ctl *rst, bool assert)
+{
+	struct msm_clk_data *data =
+		(struct msm_clk_data *)dev_get_driver_data(rst->dev);
+	void __iomem *base = dev_get_priv(rst->dev);
+	const struct qcom_reset_map *map;
+	u32 mask, value;
+
+	if (rst->id >= data->num_resets)
+		return -EINVAL;
+
+	map = &data->resets[rst->id];
+	mask = BIT(map->bit);
+
+	/*
+	 * Linux/QSDK EDMA_HW_RESET covers both EDMA and EDMA CFG reset bits.
+	 * The generic U-Boot Qualcomm reset map is single-bit, so keep the DT
+	 * reset ID stable and widen only this IPQ9574 reset line here.
+	 */
+	if (rst->id == NSS_CC_PPE_EDMA_RESET &&
+	    map->reg == NSS_CC_PPE_RESET_REG)
+		mask = NSS_CC_PPE_EDMA_RESET_MASK;
+
+	value = readl(base + map->reg);
+	if (assert)
+		value |= mask;
+	else
+		value &= ~mask;
+	writel(value, base + map->reg);
+
+	return 0;
+}
+
 static struct msm_clk_data ipq9574_gcc_data = {
 	.resets = ipq9574_gcc_resets,
 	.num_resets = ARRAY_SIZE(ipq9574_gcc_resets),
@@ -930,6 +967,7 @@ static struct msm_clk_data ipq9574_gcc_data = {
 	.num_clks = ARRAY_SIZE(ipq9574_clks),
 	.enable = ipq9574_enable,
 	.set_rate = ipq9574_set_rate,
+	.reset_set = ipq9574_reset_set,
 };
 
 static const struct udevice_id gcc_ipq9574_of_match[] = {
