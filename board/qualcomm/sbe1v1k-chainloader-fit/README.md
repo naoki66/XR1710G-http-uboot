@@ -38,10 +38,11 @@ board/qualcomm/sbe1v1k-chainloader-fit/serve-chainloader-tftp.py \
 	--port 6969
 ```
 
-At startup the helper prints the served FIT path, size, and SHA256. It also
-checks `/srv/tftp/sbe1v1k-chainloader.itb` when serving from a non-default port
-and warns if stock U-Boot's default TFTP port 69 would see a missing or stale
-copy. Check the printed hash before booting from stock U-Boot.
+At startup the helper prints the served FIT path, size, SHA256, and embedded
+U-Boot version banner. It also checks `/srv/tftp/sbe1v1k-chainloader.itb` when
+serving from a non-default port and warns if stock U-Boot's default TFTP port 69
+would see a missing or stale copy. Check the printed hash and banner before
+booting from stock U-Boot.
 
 Then, if stock U-Boot supports `tftpdstp`, use the temporary destination port
 without saving the environment:

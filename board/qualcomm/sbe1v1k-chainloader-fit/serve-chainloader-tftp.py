@@ -7,6 +7,7 @@ handles the common U-Boot options needed for tftpboot on a non-root port.
 
 import argparse
 import hashlib
+import re
 import socket
 import struct
 import sys
@@ -123,6 +124,17 @@ def warn_system_tftp_state(served_name, served_sha256, port):
         print(f"System TFTP copy {system_path} matches SHA256 {served_sha256}")
 
 
+def find_uboot_banners(payload):
+    banners = []
+
+    for match in re.finditer(rb"U-Boot [0-9][ -~]{1,120}", payload):
+        banner = match.group(0).decode("ascii", "replace").strip()
+        if banner not in banners:
+            banners.append(banner)
+
+    return banners
+
+
 def serve_once(sock, payload, served_name, timeout, verbose):
     packet, addr = sock.recvfrom(2048)
     filename, mode, options = parse_rrq(packet)
@@ -202,6 +214,8 @@ def main():
 
     print(f"Serving {path} as {args.name} on {args.host}:{args.port}")
     print(f"Size {len(payload)} bytes, SHA256 {payload_sha256}")
+    for banner in find_uboot_banners(payload):
+        print(f"Embedded banner: {banner}")
     warn_system_tftp_state(args.name, payload_sha256, args.port)
     sys.stdout.flush()
 
