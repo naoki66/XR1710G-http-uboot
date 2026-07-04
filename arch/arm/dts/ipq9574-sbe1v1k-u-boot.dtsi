@@ -155,6 +155,13 @@
 
 &tlmm {
 	phy_rst_pinmux: phy-rst-pins {
+		qca8075-rst-pins {
+			pins = "gpio60";
+			function = "gpio";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+
 		rtl8261be-rst-pins {
 			pins = "gpio41";
 			function = "gpio";
