@@ -3860,6 +3860,34 @@ static void ipq_edma_debug_dump_tx_regs(struct ipq_eth_dev *priv,
 	}
 }
 
+static void ipq_eth_debug_dump_snapshot(struct ipq_eth_dev *priv, u32 port_id)
+{
+	struct port_info *port;
+
+	if (!port_id)
+		port_id = ipq_eth_debug_active_port(priv);
+
+	printf("NSS snapshot: requested_port=%u\n", port_id);
+	ipq_eth_debug_dump_ports(priv);
+	ipq_eth_debug_dump_summary(priv, "snapshot");
+	ipq_edma_debug_dump_tx_regs(priv, "snapshot");
+
+	if (!port_id) {
+		printf("NSS snapshot: no active PPE port, pass one explicitly\n");
+		return;
+	}
+
+	port = ipq_eth_debug_find_port(priv, port_id);
+	if (!port) {
+		printf("NSS snapshot: PPE port%u is not parsed in DT\n", port_id);
+		return;
+	}
+
+	ipq_eth_debug_dump_port_detail(priv, port_id);
+	ipq_eth_debug_dump_gmac(priv, port_id);
+	ipq_eth_debug_dump_uniphy(priv, port->uniphy_id);
+}
+
 static void ipq_edma_debug_reprogram_tx(struct ipq_eth_dev *priv)
 {
 	struct ipq_edma_hw *ehw = &priv->hw;
@@ -8368,6 +8396,7 @@ static int do_nss_debug(struct cmd_tbl *cmdtp, int flag, int argc,
 			   strcmp(argv[1], "txidx") &&
 			   strcmp(argv[1], "txmap") &&
 			   strcmp(argv[1], "txregs") &&
+			   strcmp(argv[1], "snapshot") &&
 			   strcmp(argv[1], "rearm") &&
 			   strcmp(argv[1], "txfix") &&
 			   strcmp(argv[1], "txkick") &&
@@ -8480,6 +8509,16 @@ static int do_nss_debug(struct cmd_tbl *cmdtp, int flag, int argc,
 			ipq_edma_debug_dump_tx_regs(priv, "cmd");
 			return CMD_RET_SUCCESS;
 		}
+		if (!strcmp(argv[1], "snapshot")) {
+			u32 port_id = 0;
+
+			if (argc > 3)
+				return CMD_RET_USAGE;
+			if (argc == 3)
+				port_id = simple_strtoul(argv[2], NULL, 0);
+			ipq_eth_debug_dump_snapshot(priv, port_id);
+			return CMD_RET_SUCCESS;
+		}
 		if (!strcmp(argv[1], "rearm")) {
 			ipq_eth_debug_dump_summary(priv, "before-rearm");
 			ipq_edma_rearm_rx_path(&priv->hw);
@@ -8562,6 +8601,7 @@ U_BOOT_CMD(nss_debug, 8, 1, do_nss_debug,
 	   "  txidx <txdesc-prod|txdesc-cons|txcmpl-prod|txcmpl-cons> [ring] [value] - dump or write a TX ring index\n"
 	   "  txmap [txdesc-ring txcmpl-ring] - dump or set TXDESC to TXCMPL mapping\n"
 	   "  txregs        - dump EDMA TX ring/global registers\n"
+	   "  snapshot [ppe-id] - dump ports, summary, TX regs, PPE port, GMAC, and UNIPHY\n"
 	   "  rearm         - manually re-arm EDMA RX/TX rings for XBL handoff experiments\n"
 	   "  txfix         - reprogram EDMA TX rings/map/global registers\n"
 	   "  txkick [toggle] - rewrite TX producer and optionally toggle TX_EN\n"
