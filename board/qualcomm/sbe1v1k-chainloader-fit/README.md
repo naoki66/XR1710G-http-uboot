@@ -56,6 +56,21 @@ bootm 0x80000000
 
 Do not save the environment while using the temporary high-port TFTP path.
 
+## Board Log Analysis
+
+Use the log analyzer on captured serial output before changing EDMA defaults
+based on a failed ping:
+
+```sh
+board/qualcomm/sbe1v1k-chainloader-fit/analyze-board-log.py board.log
+```
+
+By default it compares the log against `include/config/uboot.release`, reports
+whether the expected U-Boot banner was seen, checks if short EDMA TX frames were
+padded to `hw_len=49`, decodes EDMA misc bits such as `DATA_LEN_ERR` and
+`TX_TIMEOUT`, and summarizes TX completion errors and PPE/GMAC TX counters when
+they are present in the log.
+
 ## HTTP Migration
 
 Open the recovery page at:
