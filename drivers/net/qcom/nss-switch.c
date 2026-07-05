@@ -683,6 +683,21 @@ void ipq_port_reset(struct reset_ctl *rst, bool set)
 		reset_deassert(rst);
 }
 
+static int ipq_eth_get_node_reset(ofnode node, const char *name,
+				  struct reset_ctl *rst)
+{
+	int index;
+
+	if (!ofnode_valid(node))
+		return -ENOENT;
+
+	index = ofnode_stringlist_search(node, "reset-names", name);
+	if (index < 0)
+		return -ENOENT;
+
+	return reset_get_by_index_nodev(node, index, rst);
+}
+
 static void ppe_uniphy_reset(struct port_info *port, bool issoft, bool set)
 {
 	struct udevice *dev;
@@ -698,7 +713,9 @@ static void ppe_uniphy_reset(struct port_info *port, bool issoft, bool set)
 	if (!issoft && ofnode_valid(port->pcs_node)) {
 		ofnode parent = ofnode_get_parent(port->pcs_node);
 
-		ret = reset_get_by_index_nodev(parent, 0, &rst);
+		ret = ipq_eth_get_node_reset(parent, "xpcs", &rst);
+		if (ret)
+			ret = reset_get_by_index_nodev(parent, 0, &rst);
 		if (!ret) {
 			ipq_port_reset(&rst, set);
 			reset_free(&rst);
@@ -707,24 +724,37 @@ static void ppe_uniphy_reset(struct port_info *port, bool issoft, bool set)
 	}
 
 	snprintf(name, sizeof(name), "uniphy%d_%s", port->uniphy_id,
-		 (issoft) ? "srst" : "xrst");
+		 (issoft) ? "sys_rst" : "xpcs_rst");
 
 	ret = reset_get_by_name(dev, name, &rst);
+	if (ret) {
+		snprintf(name, sizeof(name), "uniphy%d_%s", port->uniphy_id,
+			 (issoft) ? "srst" : "xrst");
+		ret = reset_get_by_name(dev, name, &rst);
+	}
 
 	if (!ret)
 		ipq_port_reset(&rst, set);
 
 	if (issoft) {
-		snprintf(name, sizeof(name), "uniphy_port%d_tx", port->id);
+		snprintf(name, sizeof(name), "uniphy_port%d_tx_rst", port->id);
 
 		ret = reset_get_by_name(dev, name, &rst);
+		if (ret) {
+			snprintf(name, sizeof(name), "uniphy_port%d_tx", port->id);
+			ret = reset_get_by_name(dev, name, &rst);
+		}
 
 		if (!ret)
 			ipq_port_reset(&rst, set);
 
-		snprintf(name, sizeof(name), "uniphy_port%d_rx", port->id);
+		snprintf(name, sizeof(name), "uniphy_port%d_rx_rst", port->id);
 
 		ret = reset_get_by_name(dev, name, &rst);
+		if (ret) {
+			snprintf(name, sizeof(name), "uniphy_port%d_rx", port->id);
+			ret = reset_get_by_name(dev, name, &rst);
+		}
 
 		if (!ret)
 			ipq_port_reset(&rst, set);
@@ -788,6 +818,74 @@ void ppe_uniphy_refclk_set_25M(struct port_info *port)
 				UNIPHY1_CLKOUT_50M_CTRL_50M_25M_EN);
 
 	writel(reg_value, port->uniphy_base + UNIPHY1_CLKOUT_50M_CTRL_OPTION);
+}
+
+static bool ppe_uniphy_port_is_sfp(struct port_info *port)
+{
+	return port && (port->phy_id == SFP10G_PHY_TYPE ||
+			port->phy_id == SFP2_5G_PHY_TYPE ||
+			port->phy_id == SFP1G_PHY_TYPE);
+}
+
+static u32 ppe_uniphy_mii_ctrl_addr(u32 portid, u32 uniphy_index)
+{
+	if (uniphy_index != 0 || portid == 1)
+		return SR_MII_CTRL_ADDRESS;
+
+	switch (portid) {
+	case 2:
+		return SR_MII_CTRL_CHANNEL1_ADDRESS;
+	case 3:
+		return SR_MII_CTRL_CHANNEL2_ADDRESS;
+	case 4:
+		return SR_MII_CTRL_CHANNEL3_ADDRESS;
+	default:
+		return SR_MII_CTRL_ADDRESS;
+	}
+}
+
+static u32 ppe_uniphy_an_intr_sts_addr(u32 portid, u32 uniphy_index)
+{
+	if (uniphy_index != 0 || portid == 1)
+		return VR_MII_AN_INTR_STS;
+
+	switch (portid) {
+	case 2:
+		return VR_MII_AN_INTR_STS_CHANNEL1_ADDRESS;
+	case 3:
+		return VR_MII_AN_INTR_STS_CHANNEL2_ADDRESS;
+	case 4:
+		return VR_MII_AN_INTR_STS_CHANNEL3_ADDRESS;
+	default:
+		return VR_MII_AN_INTR_STS;
+	}
+}
+
+static u32 ppe_uniphy_an_ctrl_addr(u32 portid, u32 uniphy_index)
+{
+	if (uniphy_index != 0 || portid == 1)
+		return VR_MII_AN_CTRL_ADDRESS;
+
+	switch (portid) {
+	case 2:
+		return VR_MII_AN_CTRL_CHANNEL1_ADDRESS;
+	case 3:
+		return VR_MII_AN_CTRL_CHANNEL2_ADDRESS;
+	case 4:
+		return VR_MII_AN_CTRL_CHANNEL3_ADDRESS;
+	default:
+		return VR_MII_AN_CTRL_ADDRESS;
+	}
+}
+
+static void ppe_uniphy_usxgmii_restart_autoneg(struct port_info *port)
+{
+	u32 mii_ctrl_address, reg_value;
+
+	mii_ctrl_address = ppe_uniphy_mii_ctrl_addr(port->id, port->uniphy_id);
+	reg_value = csr1_read(port->uniphy_id, mii_ctrl_address);
+	reg_value |= AN_RESTART;
+	csr1_write(port->uniphy_id, mii_ctrl_address, reg_value);
 }
 
 static void ppe_uniphy_sgmii_mode_set(struct port_info *port)
@@ -899,12 +997,21 @@ static void ppe_uniphy_usxgmii_mode_set(struct port_info *port)
 
 	writel(0x1021, base + PPE_UNIPHY_MODE_CONTROL);
 
+	if (!ppe_uniphy_port_is_sfp(port)) {
+		reg_value = readl(base + UNIPHY_INSTANCE_LINK_DETECT);
+		reg_value &= ~UNIPHY_DETECT_LOS_FROM_SFP;
+		writel(reg_value, base + UNIPHY_INSTANCE_LINK_DETECT);
+	}
+
 	ppe_uniphy_reset(port, true, true);
 	mdelay(RESET_DELAY);
 	ppe_uniphy_reset(port, true, false);
 	mdelay(RESET_DELAY);
 
 	ppe_uniphy_calibration(port);
+
+	if (port->phy_25mhz)
+		ppe_uniphy_refclk_set_25M(port);
 
 	ppe_uniphy_reset(port, false, false);
 
@@ -1063,43 +1170,34 @@ void ppe_uniphy_mode_set(struct port_info *port)
 	}
 }
 
-void ppe_uniphy_usxgmii_autoneg_completed(int uniphy_index)
+void ppe_uniphy_usxgmii_autoneg_completed(struct port_info *port)
 {
 	u32 autoneg_complete = 0, retries = 100;
 	u32 reg_value = 0;
+	u32 an_intr_sts;
+
+	an_intr_sts = ppe_uniphy_an_intr_sts_addr(port->id, port->uniphy_id);
 
 	while (autoneg_complete != 0x1) {
 		mdelay(1);
-		if (retries-- == 0)
+		if (retries-- == 0) {
+			if (ipq_edma_debug_trace())
+				printf("UNIPHY%u port%u USXGMII AN timeout sts=%08x\n",
+				       port->uniphy_id, port->id, reg_value);
 			return;
+		}
 
-		reg_value = csr1_read(uniphy_index, VR_MII_AN_INTR_STS);
+		reg_value = csr1_read(port->uniphy_id, an_intr_sts);
 		autoneg_complete = reg_value & 0x1;
 	}
 	reg_value &= ~CL37_ANCMPLT_INTR;
-	csr1_write(uniphy_index, VR_MII_AN_INTR_STS, reg_value);
+	csr1_write(port->uniphy_id, an_intr_sts, reg_value);
 }
 
 void ppe_uniphy_usxgmii_speed_set(int portid, int uniphy_index, int speed)
 {
 	u32 reg_value = 0;
-	u32 mii_ctrl_aadress = SR_MII_CTRL_ADDRESS;
-
-	if (uniphy_index == 0 && portid != 1) {
-		switch (portid) {
-		case 2:
-			mii_ctrl_aadress = SR_MII_CTRL_CHANNEL1_ADDRESS;
-			break;
-		case 3:
-			mii_ctrl_aadress = SR_MII_CTRL_CHANNEL2_ADDRESS;
-			break;
-		case 4:
-			mii_ctrl_aadress = SR_MII_CTRL_CHANNEL3_ADDRESS;
-			break;
-		default:
-			break;
-		}
-	}
+	u32 mii_ctrl_aadress = ppe_uniphy_mii_ctrl_addr(portid, uniphy_index);
 
 	reg_value = csr1_read(uniphy_index, mii_ctrl_aadress);
 	reg_value |= DUPLEX_MODE;
@@ -1140,18 +1238,19 @@ void ppe_uniphy_usxgmii_speed_set(int portid, int uniphy_index, int speed)
 	csr1_write(uniphy_index, mii_ctrl_aadress, reg_value);
 }
 
-void ppe_uniphy_usxgmii_duplex_set(int uniphy_index, int duplex)
+void ppe_uniphy_usxgmii_duplex_set(int portid, int uniphy_index, int duplex)
 {
 	u32 reg_value = 0;
+	u32 mii_ctrl_address = ppe_uniphy_mii_ctrl_addr(portid, uniphy_index);
 
-	reg_value = csr1_read(uniphy_index, SR_MII_CTRL_ADDRESS);
+	reg_value = csr1_read(uniphy_index, mii_ctrl_address);
 
 	if (duplex & 0x1)
 		reg_value |= DUPLEX_MODE;
 	else
 		reg_value &= ~DUPLEX_MODE;
 
-	csr1_write(uniphy_index, SR_MII_CTRL_ADDRESS, reg_value);
+	csr1_write(uniphy_index, mii_ctrl_address, reg_value);
 }
 
 void ppe_uniphy_usxgmii_port_reset(int uniphy_index, int port_id,
@@ -1408,10 +1507,12 @@ void ppe_port_speed_set(phys_addr_t reg_base, struct port_info *port)
 		break;
 	case PORT_WRAPPER_UQXGMII:
 	case PORT_WRAPPER_USXGMII:
-		ppe_uniphy_usxgmii_autoneg_completed(port->uniphy_id);
+		ppe_uniphy_usxgmii_restart_autoneg(port);
+		ppe_uniphy_usxgmii_autoneg_completed(port);
 		ppe_uniphy_usxgmii_speed_set(port->id, port->uniphy_id,
 					     port->mac_speed);
-		ppe_uniphy_usxgmii_duplex_set(port->uniphy_id, port->duplex);
+		ppe_uniphy_usxgmii_duplex_set(port->id, port->uniphy_id,
+					       port->duplex);
 		ppe_uniphy_usxgmii_port_reset(port->uniphy_id, port->id,
 					      port->uniphy_mode);
 		usxgmii = true;
@@ -2506,12 +2607,28 @@ static void ipq_eth_debug_dump_uniphy(struct ipq_eth_dev *priv, u32 uniphy_id)
 		return;
 	}
 
-	printf(" csr1: kr_sts=%08x dig_ctrl=%08x sr_mii=%08x an_ctrl=%08x an_sts=%08x\n",
-	       csr1_read(uniphy_id, SR_XS_PCS_KR_STS1_ADDRESS),
-	       csr1_read(uniphy_id, VR_XS_PCS_DIG_CTRL1_ADDRESS),
-	       csr1_read(uniphy_id, SR_MII_CTRL_ADDRESS),
-	       csr1_read(uniphy_id, VR_MII_AN_CTRL_ADDRESS),
-	       csr1_read(uniphy_id, VR_MII_AN_INTR_STS));
+	for (i = 0; i < CONFIG_ETH_MAX_MAC; i++) {
+		struct port_info *port = priv->port[i];
+		u32 sr_mii, an_ctrl, an_sts;
+
+		if (!port || port->uniphy_id != uniphy_id)
+			continue;
+		if (!IS_USXGMII_MODE(port->uniphy_mode) &&
+		    !IS_UQXGMII_MODE(port->uniphy_mode))
+			continue;
+
+		sr_mii = ppe_uniphy_mii_ctrl_addr(port->id, uniphy_id);
+		an_ctrl = ppe_uniphy_an_ctrl_addr(port->id, uniphy_id);
+		an_sts = ppe_uniphy_an_intr_sts_addr(port->id, uniphy_id);
+
+		printf(" csr1 port%u: kr_sts=%08x dig_ctrl=%08x sr_mii@%06x=%08x an_ctrl@%06x=%08x an_sts@%06x=%08x\n",
+		       port->id,
+		       csr1_read(uniphy_id, SR_XS_PCS_KR_STS1_ADDRESS),
+		       csr1_read(uniphy_id, VR_XS_PCS_DIG_CTRL1_ADDRESS),
+		       sr_mii, csr1_read(uniphy_id, sr_mii),
+		       an_ctrl, csr1_read(uniphy_id, an_ctrl),
+		       an_sts, csr1_read(uniphy_id, an_sts));
+	}
 }
 
 static void ipq_eth_debug_dump_port_detail(struct ipq_eth_dev *priv,
@@ -6494,11 +6611,6 @@ static int ipq_eth_probe(struct udevice *dev)
 		}
 #endif
 
-#if defined(CONFIG_PHY_QCA_8337) || defined(CONFIG_PHY_QCA_8033)
-		if (port->phy_25mhz)
-			ppe_uniphy_refclk_set_25M(port);
-#endif
-
 #ifdef CONFIG_PHY_QCA_8X8X
 		if (port->phy_id == QCA8x8x_PHY_TYPE || port->phy_id == QCA8x8x_SWITCH_TYPE)
 			ipq_eth_8x8x_pre_init(port->bus);
@@ -6764,7 +6876,9 @@ static int ipq_eth_add_dt_port(struct ipq_eth_dev *priv, ofnode port_node,
 	port->isforce_speed = ipq_eth_read_bool_2(port_node, phy_node,
 						  "force-speed");
 	port->xgmac = ipq_eth_read_bool_2(port_node, phy_node, "xgmac");
-	port->phy_25mhz = ipq_eth_read_bool_2(port_node, phy_node, "25M");
+	port->phy_25mhz = ipq_eth_read_bool_2(port_node, phy_node, "25M") ||
+			  ipq_eth_read_bool_2(port_node, phy_node,
+					      "qcom,uniphy-clkout-25mhz");
 	port->i2c_bus = ipq_eth_read_u32_2(port_node, phy_node, "i2c-bus", 0);
 	port->interface = ipq_eth_read_interface(port_node, phy_node,
 						 port->phy_id,

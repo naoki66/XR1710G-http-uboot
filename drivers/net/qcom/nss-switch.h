@@ -1042,6 +1042,7 @@ static inline void edma_unified_write_masked(phys_addr_t addr, u32 val, struct e
 #define UNIPHY_CH0_ATHR_CSCO_MODE_25M		BIT(0)
 
 #define UNIPHY_INSTANCE_LINK_DETECT		0x570
+#define UNIPHY_DETECT_LOS_FROM_SFP		GENMASK(8, 6)
 
 #define UNIPHY_MISC2_REG_OFFSET			0x218
 #define UNIPHY_MISC2_REG_SGMII_MODE		0x30
@@ -1097,13 +1098,16 @@ static inline void edma_unified_write_masked(phys_addr_t addr, u32 val, struct e
 #define MII_AN_INTR_EN				BIT(0)
 #define MII_CTRL				BIT(8)
 
-#define SR_MII_CTRL_ADDRESS			0x1f0000
 #define AN_ENABLE				BIT(12)
+#define AN_RESTART				BIT(9)
 #define SS5					BIT(5)
 #define SS6					BIT(6)
 #define SS13					BIT(13)
 #define DUPLEX_MODE				BIT(8)
 
+#define VR_MII_AN_INTR_STS_CHANNEL1_ADDRESS	0x1a8002
+#define VR_MII_AN_INTR_STS_CHANNEL2_ADDRESS	0x1b8002
+#define VR_MII_AN_INTR_STS_CHANNEL3_ADDRESS	0x1c8002
 #define VR_MII_AN_INTR_STS			0x1f8002
 #define CL37_ANCMPLT_INTR			BIT(0)
 
