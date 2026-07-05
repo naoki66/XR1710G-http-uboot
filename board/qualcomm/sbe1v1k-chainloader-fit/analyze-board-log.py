@@ -38,6 +38,20 @@ SUMMARY_TX_RE = re.compile(
     r"txd0=(?P<txd_prod>\d+)/(?:\d+\s+)?(?P<txd_cons>\d+)\s+"
     r"txc0=(?P<txc_prod>\d+)/(?:\d+\s+)?(?P<txc_cons>\d+)"
 )
+TXDESC_INIT_RE = re.compile(
+    r"EDMA TXDESC(?P<ring>\d+) init "
+    r"prod=(?P<prod_local>\d+)/(?P<prod_raw>\d+) "
+    r"cons=(?P<cons_local>\d+)/(?P<cons_raw>\d+)"
+)
+RXDESC_INIT_RE = re.compile(
+    r"EDMA RXDESC(?P<ring>\d+) init "
+    r"cons=(?P<cons>\d+) prod=(?P<prod>\d+)"
+)
+RXFILL_PRIME_RE = re.compile(
+    r"EDMA RXFILL(?P<ring>\d+) prime "
+    r"cons=(?P<cons_local>\d+)/(?P<cons_raw>\d+) "
+    r"prod=(?P<prod_local>\d+)/(?P<prod_raw>\d+)"
+)
 COUNTER_PACKETS_RE = re.compile(
     r"\b(?P<name>port_tx|queue_tx|ppe_port_tx|ppe_queue_tx)\b.*?"
     r"packets=(?P<packets>\d+)"
@@ -46,6 +60,7 @@ GMAC_TX_RE = re.compile(r"\bgmac_tx_mib:.*?txbytes=0x(?P<txbytes>[0-9a-fA-F]+)")
 PPE_TX_PATH_RE = re.compile(
     r"\bppe_tx_path:.*?txbytes=0x(?P<txbytes>[0-9a-fA-F]+)"
 )
+PING_ALIVE_RE = re.compile(r"\bhost\s+(?P<host>\S+)\s+is alive\b")
 
 
 def repo_release():
@@ -105,6 +120,19 @@ def collect(text):
     for match in SUMMARY_TX_RE.finditer(text):
         summaries.append({key: int(match.group(key)) for key in match.groupdict()})
 
+    txdesc_init = [
+        {key: int(value) for key, value in match.groupdict().items()}
+        for match in TXDESC_INIT_RE.finditer(text)
+    ]
+    rxdesc_init = [
+        {key: int(value) for key, value in match.groupdict().items()}
+        for match in RXDESC_INIT_RE.finditer(text)
+    ]
+    rxfill_prime = [
+        {key: int(value) for key, value in match.groupdict().items()}
+        for match in RXFILL_PRIME_RE.finditer(text)
+    ]
+
     counters = {}
     for match in COUNTER_PACKETS_RE.finditer(text):
         name = match.group("name")
@@ -120,7 +148,11 @@ def collect(text):
         "misc_values": misc_values,
         "txcmpl_errors": txcmpl_errors,
         "summaries": summaries,
+        "txdesc_init": txdesc_init,
+        "rxdesc_init": rxdesc_init,
+        "rxfill_prime": rxfill_prime,
         "counters": counters,
+        "alive_hosts": PING_ALIVE_RE.findall(text),
         "has_snapshot": "NSS snapshot:" in text,
         "has_ping_fail": "ping failed" in text,
     }
@@ -205,6 +237,27 @@ def analyze(data, expected_release):
             f"txc0={last_summary['txc_prod']}/{last_summary['txc_cons']}"
         )
 
+    if data["txdesc_init"] or data["rxdesc_init"] or data["rxfill_prime"]:
+        print()
+        print("EDMA ring init evidence:")
+        for entry in data["rxdesc_init"]:
+            print(
+                f"  RXDESC{entry['ring']} init "
+                f"cons={entry['cons']} prod={entry['prod']}"
+            )
+        for entry in data["rxfill_prime"]:
+            print(
+                f"  RXFILL{entry['ring']} prime "
+                f"cons={entry['cons_local']}/{entry['cons_raw']} "
+                f"prod={entry['prod_local']}/{entry['prod_raw']}"
+            )
+        for entry in data["txdesc_init"]:
+            print(
+                f"  TXDESC{entry['ring']} init "
+                f"prod={entry['prod_local']}/{entry['prod_raw']} "
+                f"cons={entry['cons_local']}/{entry['cons_raw']}"
+            )
+
     counters = data["counters"]
     if counters:
         print()
@@ -213,10 +266,16 @@ def analyze(data, expected_release):
             values = counters[name]
             print(f"  {name}: max={max(values)} samples={len(values)}")
 
+    if data["alive_hosts"]:
+        print()
+        print_list("Ping success observed:", data["alive_hosts"])
+
     print()
     print("Next-step verdict:")
     if expected_release and not saw_expected:
         print("- Board did not run the expected FIT. Fix TFTP/boot path first.")
+    elif data["alive_hosts"]:
+        print("- Ping succeeded. EDMA reset/index, TX completion, RX, and GMAC egress are working for this port.")
     elif unpadded_tx:
         print("- Short EDMA frames are still unpadded. Confirm the board loaded this build.")
     elif padded_tx and any(value & 0x40 for value in misc_nonzero):
