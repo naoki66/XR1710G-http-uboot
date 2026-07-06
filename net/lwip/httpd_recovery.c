@@ -349,13 +349,19 @@ static void recovery_status_led_set(const struct recovery_gpio_pin *pin, int on)
 	if (!pin->valid)
 		return;
 
-	recovery_gpio_set_value(pin->gpio, pin->active_low, on);
+	if (dm_gpio_is_valid(&pin->desc))
+		dm_gpio_set_value(&pin->desc, on);
 }
 
 static void recovery_gpio_pin_release(struct recovery_gpio_pin *pin)
 {
 	if (!pin->valid)
 		return;
+
+	if (dm_gpio_is_valid(&pin->desc)) {
+		dm_gpio_set_value(&pin->desc, 0);
+		dm_gpio_free(NULL, &pin->desc);
+	}
 
 	memset(pin, 0, sizeof(*pin));
 }
@@ -433,10 +439,17 @@ static void recovery_status_led_collect_alias(struct recovery_status_led_ctrl *c
 
 static int recovery_status_led_request(struct recovery_gpio_pin *pin)
 {
-	recovery_gpio_prepare_output(pin->gpio);
-	recovery_gpio_set_value(pin->gpio, pin->active_low, 0);
+	int ret;
 
-	return 0;
+	ret = gpio_request_by_name_nodev(pin->node, "gpios", 0, &pin->desc,
+					 GPIOD_IS_OUT);
+	if (ret)
+		return ret;
+
+	pin->gpio = pin->desc.offset;
+	pin->active_low = pin->desc.flags & GPIOD_ACTIVE_LOW;
+
+	return dm_gpio_set_value(&pin->desc, 0);
 }
 
 static void recovery_status_led_release(struct recovery_status_led_ctrl *ctrl)
@@ -3813,14 +3826,12 @@ int run_http_recovery(void)
 
 	printf("HTTP recovery: preparing board runtime\n");
 	recovery_watchdog_poll();
-	if (recovery_board_is_sbe1v1k()) {
-		printf("Recovery LEDs disabled on SBE1V1K\n");
+	rc = recovery_status_led_init(&status_leds);
+	if (!rc) {
+		use_status_leds = true;
 	} else {
-		rc = recovery_status_led_init(&status_leds);
-		if (!rc) {
-			use_status_leds = true;
-		} else {
-			printf("Recovery status LEDs unavailable (%d)\n", rc);
+		printf("Recovery status LEDs unavailable (%d)\n", rc);
+		if (!recovery_board_is_sbe1v1k()) {
 			printf("Fallback to link LEDs\n");
 			recovery_led_init(&leds);
 			use_link_leds = true;
