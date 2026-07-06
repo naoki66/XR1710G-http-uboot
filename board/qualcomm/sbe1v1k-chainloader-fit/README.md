@@ -138,6 +138,80 @@ root data:    0#rootfs_data
 OpenWrt/QSDK boots from the second-stage chainloader via `kernel` and
 `root=PARTLABEL=rootfs`. It does not depend on `0:HLOS`.
 
+## Offline eMMC Recovery
+
+If the installed chainloader hangs before the second-stage U-Boot banner and
+the stock U-Boot shell cannot be reached, rewrite only partition 27 on the eMMC
+user area. Do not rewrite the full device and do not use the eMMC boot0/boot1
+hardware partitions.
+
+Expected chainloader partition:
+
+```text
+partition: chainloader
+start LBA: 110626 (0x1b022)
+sectors:   8192   (0x2000)
+offset:    0x3604400
+size:      4 MiB
+```
+
+After attaching the eMMC to a Linux host, first confirm the device and GPT:
+
+```sh
+sudo sgdisk -p /dev/sdX
+```
+
+The GPT should show partition 27 named `chainloader` at start sector `110626`.
+If the host creates a partition node, write the padded 4 MiB chainloader image
+to that partition:
+
+```sh
+sudo dd if=sbe1v1k-chainloader/sbe1v1k-chainloader-partition.img \
+	of=/dev/sdX27 bs=4M conv=fsync
+```
+
+If a partition node is not available, write the same image at the fixed byte
+offset on the whole eMMC user device:
+
+```sh
+sudo dd if=sbe1v1k-chainloader/sbe1v1k-chainloader-partition.img \
+	of=/dev/sdX bs=512 seek=110626 conv=notrunc,fsync
+```
+
+For `/dev/mmcblkN`, the partition node form is `/dev/mmcblkNp27`. Replace
+`/dev/sdX` with the actual eMMC user-area device.
+
+If a full-device rewrite is unavoidable, first make a raw backup of the eMMC
+user area and, when exposed by the reader, both eMMC boot areas:
+
+```sh
+sudo dd if=/dev/sdX of=sbe1v1k-emmc-user-before.img \
+	bs=4M conv=sync,noerror status=progress
+sudo dd if=/dev/mmcblkNboot0 of=sbe1v1k-emmc-boot0-before.img \
+	bs=4M conv=sync,noerror status=progress
+sudo dd if=/dev/mmcblkNboot1 of=sbe1v1k-emmc-boot1-before.img \
+	bs=4M conv=sync,noerror status=progress
+```
+
+The factory layout has known integration problems that this chainloader flow
+intentionally replaces: the tail partition can invalidate the backup GPT, the
+stock environment does not boot the new GPT layout, and the stock loader cannot
+directly load the embedded second-stage U-Boot payload safely. Those are not
+reasons to overwrite board-unique data.
+
+For whole-device recovery, preserve these partitions from the same board unless
+there is a verified same-unit backup:
+
+```text
+0:APPSBLENV  environment, fallback MAC variables
+0:ART        board calibration and MAC-related data
+0:LICENSE    device license data
+```
+
+The boot-chain partitions before `chainloader` can be restored from a trusted
+same-model factory image only when they are known bad. Do not use another
+unit's `0:ART`, `0:APPSBLENV`, or `0:LICENSE` as a generic replacement.
+
 ## Build
 
 ```sh
