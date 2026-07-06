@@ -1748,6 +1748,11 @@ struct recovery_factory_part {
 	lbaint_t size;
 };
 
+/*
+ * Check the factory boot partitions and p27+ boundary before rewriting GPT.
+ * Do not require ASKEYMFC: the factory tail partition reaches the end of the
+ * eMMC user area and can be hidden by an invalid secondary GPT on some units.
+ */
 static const struct recovery_factory_part sbe1v1k_factory_parts[] = {
 	{ "0#0:SBL1", 34, 2048 },
 	{ "0#0:WIFIFW_1", 61474, 20480 },
@@ -1758,7 +1763,6 @@ static const struct recovery_factory_part sbe1v1k_factory_parts[] = {
 	{ "0#rootfs_data", 610338, 1048576 },
 	{ "0#rootfs_data_1", 1658914, 1048576 },
 	{ "0#rsvd_2", 5201954, 65536 },
-	{ "0#ASKEYMFC", 15249408, 20480 },
 };
 
 static const char sbe1v1k_openwrt_gpt[] =

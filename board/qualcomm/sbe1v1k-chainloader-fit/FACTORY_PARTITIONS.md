@@ -19,6 +19,11 @@ sha256: bb9f8df61474d25e71fa00722318cd387396ca1736605e1248821cc0de3d3af8
 because factory p43 `ASKEYMFC` reaches the final sector. The migration layout
 below leaves room for a valid secondary GPT.
 
+The recovery migration check intentionally does not require `ASKEYMFC` to be
+resolvable by U-Boot. Some factory images expose the same corrupt-secondary-GPT
+tail condition through U-Boot's partition parser, while the preserved p1-p26
+boot-chain boundary is still valid.
+
 Sector size is 512 bytes. The user area has 15,269,888 sectors.
 
 ## Factory Partitions
