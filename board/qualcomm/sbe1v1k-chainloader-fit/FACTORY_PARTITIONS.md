@@ -140,7 +140,7 @@ The resulting stock U-Boot environment is:
 
 ```text
 bootargs=console=ttyMSM0,115200n8 rootwait root=PARTLABEL=rootfs
-boot_chainloader=mmc read 0x44000000 0x0001b022 0x2000; bootm 0x44000000
+boot_chainloader=mmc dev 0 0; mmc read 0x44000000 0x0001b022 0x2000; bootm 0x44000000
 do_boot=run boot_chainloader
 bootcmd=echo "Hit ctrl+c for shell..."; if sleep 3; then run do_boot; else true; fi;
 ```

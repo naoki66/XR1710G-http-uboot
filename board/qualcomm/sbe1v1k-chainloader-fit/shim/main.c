@@ -4,6 +4,7 @@
 #include "libfdt.h"
 
 #define DEFAULT_FIT_BASE	0x80000000UL
+#define PERSISTENT_FIT_BASE	0x44000000UL
 #define FIT_SEARCH_LIMIT	0x4000UL
 #define FIT_SEARCH_STEP		4UL
 #define DEFAULT_PAYLOAD_LOAD	0x4a240000UL
@@ -159,6 +160,7 @@ static const void *find_fit_with_fallbacks(uintptr_t primary)
 	const uintptr_t candidates[] = {
 		primary,
 		DEFAULT_FIT_BASE,
+		PERSISTENT_FIT_BASE,
 	};
 	const void *first_valid = 0;
 	const void *fit;

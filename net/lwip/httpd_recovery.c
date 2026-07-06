@@ -2141,7 +2141,7 @@ static int recovery_write_appsblenv(struct recovery_status_led_ctrl *status_leds
 		},
 		{
 			"boot_chainloader",
-			"mmc read 0x44000000 0x0001b022 0x2000; bootm 0x44000000"
+			"mmc dev 0 0; mmc read 0x44000000 0x0001b022 0x2000; bootm 0x44000000"
 		},
 		{ "do_boot", "run boot_chainloader" },
 		{
