@@ -95,6 +95,9 @@ The recovery action:
 - updates `0:APPSBLENV` with `fw_setenv`-equivalent variable changes;
 - keeps the HTTP server running so firmware can be uploaded next.
 
+SBE1V1K is an eMMC/GPT device. Recovery writes raw GPT partitions only; it must
+not format, create, resize, or write UBI volumes on this board.
+
 The installed stock U-Boot environment is equivalent to:
 
 ```sh

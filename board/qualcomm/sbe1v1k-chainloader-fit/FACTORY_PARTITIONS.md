@@ -92,6 +92,10 @@ and deletes/rebuilds p27-p43:
 | 29 | 184354 (`0x2d022`) | 2281505 | 2097152 (`0x200000`) | 1 GiB | `rootfs` |
 | 30 | 2281506 (`0x22d022`) | 15269854 | 12988349 | about 6.2 GiB | `rootfs_data` |
 
+This is a raw eMMC/GPT layout. `rootfs_data` is a GPT partition label, not a UBI
+volume, and the SBE1V1K recovery path must not use UBI management for firmware
+or data writes.
+
 Byte offsets used by U-Boot `gpt write`:
 
 ```text

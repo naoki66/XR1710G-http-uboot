@@ -1193,6 +1193,9 @@ static bool recovery_backend_is_mmc(void)
 {
 	const char *backend = env_get("recovery_backend");
 
+	if (recovery_board_is_sbe1v1k())
+		return true;
+
 	return backend && (!strcasecmp(backend, "mmc") ||
 			   !strcasecmp(backend, "emmc"));
 }
