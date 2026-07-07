@@ -86,16 +86,20 @@ partitions are part of the Askey dual-image verification and backup flow.
 
 ## Chainloader Migration Layout
 
-The chainloader HTTP action starts from the factory GPT above, preserves p1-p26
-and deletes/rebuilds p27-p43:
+The table below is the layout produced from the standard factory GPT above.
+The recovery code does not require every source GPT to have the same tail
+partition set: it preserves all existing partitions ending before LBA
+`110626` (`0x1b022`) and deletes/rebuilds the region from that LBA onward.
+On variants that omit `0:HLOS_1`, the numeric partition indices after `0:HLOS`
+will differ, but the target labels and LBAs remain the same.
 
-| No. | Start | End | Sectors | Size | Name |
-| ---: | ---: | ---: | ---: | ---: | --- |
-| 1-26 | unchanged | unchanged | unchanged | unchanged | factory labels |
-| 27 | 110626 (`0x1b022`) | 118817 | 8192 (`0x2000`) | 4 MiB | `chainloader` |
-| 28 | 118818 (`0x1d022`) | 184353 | 65536 (`0x10000`) | 32 MiB | `kernel` |
-| 29 | 184354 (`0x2d022`) | 2281505 | 2097152 (`0x200000`) | 1 GiB | `rootfs` |
-| 30 | 2281506 (`0x22d022`) | 15269854 | 12988349 | about 6.2 GiB | `rootfs_data` |
+| Start | End | Sectors | Size | Name |
+| ---: | ---: | ---: | ---: | --- |
+| before 110626 (`0x1b022`) | unchanged | unchanged | unchanged | existing labels |
+| 110626 (`0x1b022`) | 118817 | 8192 (`0x2000`) | 4 MiB | `chainloader` |
+| 118818 (`0x1d022`) | 184353 | 65536 (`0x10000`) | 32 MiB | `kernel` |
+| 184354 (`0x2d022`) | 2281505 | 2097152 (`0x200000`) | 1 GiB | `rootfs` |
+| 2281506 (`0x22d022`) | 15269854 | 12988349 | about 6.2 GiB | `rootfs_data` |
 
 This is a raw eMMC/GPT layout. `rootfs_data` is a GPT partition label, not a UBI
 volume, and the SBE1V1K recovery path must not use UBI management for firmware

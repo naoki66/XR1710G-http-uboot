@@ -3,10 +3,12 @@
 This builds the stock-`bootm` compatible second-stage chainloader for the
 Askey SBE1V1K.
 
-The intended installation path starts from the factory 43-partition eMMC
-layout. It does not use the 192.168.33.3/QWRT partition table. Factory
-partitions p1-p26 are kept, including `0:HLOS` and `0:HLOS_1`; the chainloader
-is never written to either HLOS slot.
+The intended installation path starts from an SBE1V1K eMMC GPT layout. It does
+not use the 192.168.33.3/QWRT partition table. Recovery preserves all existing
+partitions that end before LBA `0x1b022`, including the boot chain, `0:ART`,
+`0:WIFIFW`, and `0:HLOS`; the chainloader is never written to an HLOS slot.
+Some QSDK variants omit `0:HLOS_1`, so partition numbers after `0:HLOS` are not
+assumed to be stable.
 
 ## Serial Boot
 
@@ -87,9 +89,9 @@ SBE1V1K_REPARTITION
 
 The recovery action:
 
-- verifies the current GPT matches key factory 43-partition locations;
-- rewrites only p27 and later;
-- keeps p1-p26 untouched, including `0:HLOS` and `0:HLOS_1`;
+- verifies key boot-chain anchors before the chainloader area;
+- rewrites only the area starting at LBA `0x1b022`;
+- keeps all existing partitions before LBA `0x1b022` untouched;
 - creates `chainloader`, `kernel`, `rootfs`, and `rootfs_data`;
 - writes the currently running FIT from `0x80000000` into `chainloader`;
 - updates `0:APPSBLENV` with `fw_setenv`-equivalent variable changes;
@@ -115,15 +117,19 @@ runtime environment does not provide one.
 
 Sector size is 512 bytes.
 
-| No. | Start | Sectors | Size | Name | Purpose |
-| ---: | ---: | ---: | ---: | --- | --- |
-| 1-26 | unchanged | unchanged | unchanged | factory labels | boot chain, ART, ETHPHYFW, WIFIFW, HLOS/HLOS_1 |
-| 27 | 110626 (`0x1b022`) | 8192 (`0x2000`) | 4 MiB | `chainloader` | raw `sbe1v1k-chainloader.itb` |
-| 28 | 118818 (`0x1d022`) | 65536 (`0x10000`) | 32 MiB | `kernel` | OpenWrt/QSDK kernel FIT |
-| 29 | 184354 (`0x2d022`) | 2097152 (`0x200000`) | 1 GiB | `rootfs` | OpenWrt/QSDK root image |
-| 30 | 2281506 (`0x22d022`) | to last usable sector | about 6.2 GiB | `rootfs_data` | persistent data |
+| Start | Sectors | Size | Name | Purpose |
+| ---: | ---: | ---: | --- | --- |
+| before 110626 (`0x1b022`) | unchanged | unchanged | existing labels | boot chain, ART, ETHPHYFW, WIFIFW, HLOS, optional HLOS_1 |
+| 110626 (`0x1b022`) | 8192 (`0x2000`) | 4 MiB | `chainloader` | raw `sbe1v1k-chainloader.itb` |
+| 118818 (`0x1d022`) | 65536 (`0x10000`) | 32 MiB | `kernel` | OpenWrt/QSDK kernel FIT |
+| 184354 (`0x2d022`) | 2097152 (`0x200000`) | 1 GiB | `rootfs` | OpenWrt/QSDK root image |
+| 2281506 (`0x22d022`) | to last usable sector | about 6.2 GiB | `rootfs_data` | persistent data |
 
 The new layout leaves room for a valid secondary GPT.
+The numeric partition index of `chainloader` depends on the source GPT. On
+standard factory images it follows `0:HLOS_1`; on QSDK variants without
+`0:HLOS_1`, it follows `0:HLOS`. Scripts and recovery code use labels and fixed
+LBAs, not the numeric index.
 
 ## Recovery Targets
 

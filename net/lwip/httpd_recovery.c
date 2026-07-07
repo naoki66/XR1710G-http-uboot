@@ -52,6 +52,7 @@
 #include <timer.h>
 #include <asm/io.h>
 #include "../../drivers/mtd/ubi/ubi.h"
+#include <stdarg.h>
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -98,6 +99,16 @@ static bool recovery_board_is_sbe1v1k(void)
 #define RECOVERY_ROOTFS_DATA_CLEAR  (4 * 1024 * 1024UL)
 #define RECOVERY_MMC_WRITE_CHUNK    (1024 * 1024UL)
 #define RECOVERY_REPARTITION_MAX    64UL
+#define RECOVERY_SBE1V1K_GPT_MAX    12288UL
+#define RECOVERY_SBE1V1K_CHAINLOADER_START 110626ULL
+#define RECOVERY_SBE1V1K_CHAINLOADER_SIZE  8192ULL
+#define RECOVERY_SBE1V1K_KERNEL_START      118818ULL
+#define RECOVERY_SBE1V1K_KERNEL_SIZE       65536ULL
+#define RECOVERY_SBE1V1K_ROOTFS_START      184354ULL
+#define RECOVERY_SBE1V1K_ROOTFS_SIZE       2097152ULL
+#define RECOVERY_SBE1V1K_DATA_START        2281506ULL
+#define RECOVERY_GPT_TYPE_BASIC_DATA       "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7"
+#define RECOVERY_GPT_TYPE_LINUX_FS         "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 
 /* Delay before reboot after flashing completes, to let browser finish reads */
 #define REBOOT_DELAY_MS        3000
@@ -1762,54 +1773,242 @@ struct recovery_factory_part {
 };
 
 /*
- * Check the factory boot partitions and p27+ boundary before rewriting GPT.
- * Do not require ASKEYMFC: the factory tail partition reaches the end of the
- * eMMC user area and can be hidden by an invalid secondary GPT on some units.
+ * Check only the board-unique and boot-chain anchors that must be kept before
+ * the chainloader area. SBE1V1K factory/QSDK eMMC layouts are not uniform:
+ * some images omit 0:HLOS_1 or move later root/data partitions.
  */
 static const struct recovery_factory_part sbe1v1k_factory_parts[] = {
 	{ "0#0:SBL1", 34, 2048 },
+	{ "0#0:APPSBLENV", 28706, 512 },
+	{ "0#0:APPSBL", 29218, 4096 },
+	{ "0#0:APPSBL_1", 33314, 4096 },
+	{ "0#0:ART", 37410, 2048 },
+	{ "0#0:ETHPHYFW", 39458, 1024 },
+	{ "0#0:WIFIFW", 40994, 20480 },
 	{ "0#0:WIFIFW_1", 61474, 20480 },
 	{ "0#0:HLOS", 81954, 14336 },
-	{ "0#0:HLOS_1", 96290, 14336 },
-	{ "0#rootfs", 110626, 249856 },
-	{ "0#rootfs_1", 360482, 249856 },
-	{ "0#rootfs_data", 610338, 1048576 },
-	{ "0#rootfs_data_1", 1658914, 1048576 },
-	{ "0#rsvd_2", 5201954, 65536 },
 };
 
-static const char sbe1v1k_openwrt_gpt[] =
-	"uuid_disk=98101B32-BBE2-4BF2-A06E-2BB33D000C20;"
-	"name=0:SBL1,start=0x4400,size=0x100000,type=DEA0BA2C-CBDD-4805-B4F9-F428251C3E98,uuid=8A52D344-343A-E549-ED9A-B264DE413D55;"
-	"name=0:SBL1_1,start=0x104400,size=0x100000,type=7A3DF1A3-A31A-454D-BD78-DF259ED486BE,uuid=A49B7547-7E90-6DB7-F276-06E754650644;"
-	"name=0:BOOTCONFIG,start=0x204400,size=0x80000,type=2B7D04FF-31F0-4E6A-BE9A-DA50314DAD58,uuid=025187DC-4C24-21A6-D491-D58A0F0435BD;"
-	"name=0:BOOTCONFIG1,start=0x284400,size=0x80000,type=7BD25378-5C39-11E5-8A77-40A8F05F1418,uuid=F1F736F9-BF18-2C53-8F1D-69215C962CEA;"
-	"name=0:QSEE,start=0x304400,size=0x300000,type=A053AA7F-40B8-4B1C-BA08-2F68AC71A4F4,uuid=3961AB4B-A7C9-7CAB-DC73-C7D4941C3903;"
-	"name=0:QSEE_1,start=0x604400,size=0x300000,type=A6DD74A1-C8BF-4DBC-AE39-62B8E78C4038,uuid=A52286FC-F827-D89C-1477-6B52F206828E;"
-	"name=0:DEVCFG,start=0x904400,size=0x80000,type=F65D4B16-343D-4E25-AAFC-BE99B6556A6D,uuid=687EA2EE-1821-0010-761B-02DB14BEEC22;"
-	"name=0:DEVCFG_1,start=0x984400,size=0x80000,type=48BFA451-9443-46F7-B400-892A6B1BFC16,uuid=FDEC5365-B2C0-D094-1228-A39958709F8E;"
-	"name=0:APDP,start=0xa04400,size=0x80000,type=318B7C50-A113-0FC1-F3A2-59E76A68F3F7,uuid=1AA0D675-A37F-4535-E72D-04F404D859FC;"
-	"name=0:APDP_1,start=0xa84400,size=0x80000,type=BC4386C7-B38D-BA64-A4EC-127D57C3F24B,uuid=4FAC8501-E709-EF23-AAF3-E5EF62BC61CA;"
-	"name=0:TME,start=0xb04400,size=0x80000,type=0833175E-AF8F-BACC-F2A2-5B70354B1A0A,uuid=3F5C7D97-610B-9F02-FBD0-487CE616B38C;"
-	"name=0:TME_1,start=0xb84400,size=0x80000,type=66A49874-13D3-66EA-B0B7-3F61C7E405CD,uuid=ED1D73AD-604C-6838-F9C5-A0EDD4DBFFCF;"
-	"name=0:RPM,start=0xc04400,size=0x80000,type=098DF793-D712-413D-9D4E-89D711772228,uuid=1EB4925F-885B-D6ED-8765-382281B80334;"
-	"name=0:RPM_1,start=0xc84400,size=0x80000,type=2D2BE762-890B-11E5-AAF3-40A8F05F1418,uuid=001588BF-1DB6-1D47-6FFC-ABFC1A131725;"
-	"name=0:CDT,start=0xd04400,size=0x80000,type=A19F205F-CCD8-4B6D-8F1E-2D9BC24CFFB1,uuid=AE2F5404-53F5-D041-E55E-D2FA3993216F;"
-	"name=0:CDT_1,start=0xd84400,size=0x80000,type=7A795379-C250-4282-A2C7-FC4E13F4A43D,uuid=EA5E685D-7172-398E-3A8D-F5BB64D46929;"
-	"name=0:APPSBLENV,start=0xe04400,size=0x40000,type=300FFDCD-22E0-47E7-9A23-F16ED9382387,uuid=FB5FF3E9-FF90-D2F8-D453-9A0BF004A4E9;"
-	"name=0:APPSBL,start=0xe44400,size=0x200000,type=400FFDCD-22E0-47E7-9A23-F16ED9382388,uuid=8BE81F01-FAE2-9AFA-9DC1-1AD01F5B3ADE;"
-	"name=0:APPSBL_1,start=0x1044400,size=0x200000,type=C126787D-3EEF-444C-9E43-FEFF3F103E22,uuid=E7988837-5B97-DE5E-1354-4A0D190B878F;"
-	"name=0:ART,start=0x1244400,size=0x100000,type=A72E50C1-D37C-429D-9620-35FCA612B9A8,uuid=E4871F79-1E23-8018-ABFD-3EE3AD567B10;"
-	"name=0:ETHPHYFW,start=0x1344400,size=0x80000,type=C1DC4CAB-430B-4CDC-A8C5-7115912B74FE,uuid=65EF33C8-6506-5583-5171-24A2A56C7EAC;"
-	"name=0:LICENSE,start=0x13c4400,size=0x40000,type=A7A81A61-66CE-C908-F4A2-82D39D2AFF57,uuid=38A446C9-37EC-230A-9F64-603D3E5F98A5;"
-	"name=0:WIFIFW,start=0x1404400,size=0xa00000,type=888D8069-8D27-40A8-95A9-6006E1CE9B3B,uuid=4044C5A9-1C7A-ABEB-C3C4-8F46644DCD06;"
-	"name=0:WIFIFW_1,start=0x1e04400,size=0xa00000,type=981476F5-5CD7-42DB-9CE9-87B3A31AADBD,uuid=7A86C4EE-D900-D817-BEBC-5CF07BF59CE1;"
-	"name=0:HLOS,start=0x2804400,size=0x700000,type=B51F2982-3EBE-46DE-8721-EE641E1F9997,uuid=BB5169B0-2E1C-0EE4-AFA7-D9613B5605AC;"
-	"name=0:HLOS_1,start=0x2f04400,size=0x700000,type=A71DA577-7F81-4626-B4A2-E377F9174525,uuid=F81FBCEB-AB17-2544-4762-C5206AC116AE;"
-	"name=chainloader,start=0x3604400,size=0x400000,type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7;"
-	"name=kernel,start=0x3a04400,size=0x2000000,type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7;"
-	"name=rootfs,start=0x5a04400,size=0x40000000,type=0FC63DAF-8483-4772-8E79-3D69D8477DE4;"
-	"name=rootfs_data,start=0x45a04400,size=-,type=0FC63DAF-8483-4772-8E79-3D69D8477DE4;";
+static int recovery_appendf(char *buf, size_t size, size_t *offp,
+			    const char *fmt, ...)
+{
+	va_list ap;
+	int len;
+
+	if (*offp >= size)
+		return -ENOSPC;
+
+	va_start(ap, fmt);
+	len = vsnprintf(buf + *offp, size - *offp, fmt, ap);
+	va_end(ap);
+
+	if (len < 0)
+		return len;
+	if (*offp + len >= size)
+		return -ENOSPC;
+
+	*offp += len;
+	return 0;
+}
+
+static int recovery_append_gpt_part(char *buf, size_t size, size_t *offp,
+				    const char *name,
+				    unsigned long long start_lba,
+				    unsigned long long lba_count,
+				    unsigned long blksz,
+				    const char *type_guid,
+				    const char *uuid,
+				    bool bootable)
+{
+	int ret;
+
+	ret = recovery_appendf(buf, size, offp, "name=%s,start=0x%llx,",
+			       name, start_lba * (unsigned long long)blksz);
+	if (ret)
+		return ret;
+
+	if (lba_count)
+		ret = recovery_appendf(buf, size, offp, "size=0x%llx",
+				       lba_count * (unsigned long long)blksz);
+	else
+		ret = recovery_appendf(buf, size, offp, "size=-");
+	if (ret)
+		return ret;
+
+	if (type_guid && *type_guid) {
+		ret = recovery_appendf(buf, size, offp, ",type=%s",
+				       type_guid);
+		if (ret)
+			return ret;
+	}
+
+	if (uuid && *uuid) {
+		ret = recovery_appendf(buf, size, offp, ",uuid=%s", uuid);
+		if (ret)
+			return ret;
+	}
+
+	if (bootable) {
+		ret = recovery_appendf(buf, size, offp, ",bootable");
+		if (ret)
+			return ret;
+	}
+
+	return recovery_appendf(buf, size, offp, ";");
+}
+
+static int recovery_append_existing_gpt_part(char *buf, size_t size,
+					    size_t *offp,
+					    const struct disk_partition *part)
+{
+	const char *type_guid = NULL;
+	const char *uuid = NULL;
+
+	if (IS_ENABLED(CONFIG_PARTITION_TYPE_GUID))
+		type_guid = disk_partition_type_guid(part);
+	if (CONFIG_IS_ENABLED(PARTITION_UUIDS))
+		uuid = disk_partition_uuid(part);
+
+	return recovery_append_gpt_part(buf, size, offp,
+					(const char *)part->name,
+					part->start, part->size, part->blksz,
+					type_guid, uuid,
+					part->bootable & PART_BOOTABLE);
+}
+
+static int recovery_get_mmc_disk_guid(char *buf, size_t size)
+{
+	const char *guid;
+	int ret;
+
+	env_set("sbe1v1k_disk_guid", NULL);
+	ret = run_commandf("gpt guid mmc %s sbe1v1k_disk_guid",
+			   recovery_mmcdev());
+	if (ret)
+		return ret;
+
+	guid = env_get("sbe1v1k_disk_guid");
+	if (!guid || !*guid) {
+		env_set("sbe1v1k_disk_guid", NULL);
+		return -ENOENT;
+	}
+
+	strlcpy(buf, guid, size);
+	env_set("sbe1v1k_disk_guid", NULL);
+	return 0;
+}
+
+static int recovery_build_sbe1v1k_gpt(char **gptp)
+{
+	char disk_guid[UUID_STR_LEN + 1];
+	struct blk_desc *desc;
+	char *gpt;
+	size_t off = 0;
+	int preserved = 0;
+	int ret;
+	int p;
+
+	ret = blk_get_device_by_str("mmc", recovery_mmcdev(), &desc);
+	if (ret < 0)
+		return ret;
+
+	ret = recovery_get_mmc_disk_guid(disk_guid, sizeof(disk_guid));
+	if (ret)
+		return ret;
+
+	gpt = malloc(RECOVERY_SBE1V1K_GPT_MAX);
+	if (!gpt)
+		return -ENOMEM;
+	gpt[0] = '\0';
+
+	ret = recovery_appendf(gpt, RECOVERY_SBE1V1K_GPT_MAX, &off,
+			       "uuid_disk=%s;", disk_guid);
+	if (ret)
+		goto err;
+
+	for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
+		struct disk_partition part;
+		lbaint_t end;
+
+		ret = part_get_info(desc, p, &part);
+		if (ret)
+			continue;
+		if (!part.size)
+			continue;
+
+		end = part.start + part.size;
+		if (part.start >= RECOVERY_SBE1V1K_CHAINLOADER_START)
+			continue;
+		if (end > RECOVERY_SBE1V1K_CHAINLOADER_START) {
+			printf("Partition %d '%s' overlaps chainloader start: "
+			       "start " LBAF " size " LBAF "\n",
+			       p, (const char *)part.name, part.start,
+			       part.size);
+			ret = -EINVAL;
+			goto err;
+		}
+
+		ret = recovery_append_existing_gpt_part(gpt,
+							RECOVERY_SBE1V1K_GPT_MAX,
+							&off, &part);
+		if (ret)
+			goto err;
+		preserved++;
+	}
+
+	if (!preserved) {
+		ret = -EINVAL;
+		goto err;
+	}
+
+	ret = recovery_append_gpt_part(gpt, RECOVERY_SBE1V1K_GPT_MAX, &off,
+				       "chainloader",
+				       RECOVERY_SBE1V1K_CHAINLOADER_START,
+				       RECOVERY_SBE1V1K_CHAINLOADER_SIZE,
+				       desc->blksz,
+				       RECOVERY_GPT_TYPE_BASIC_DATA,
+				       NULL, false);
+	if (ret)
+		goto err;
+
+	ret = recovery_append_gpt_part(gpt, RECOVERY_SBE1V1K_GPT_MAX, &off,
+				       "kernel",
+				       RECOVERY_SBE1V1K_KERNEL_START,
+				       RECOVERY_SBE1V1K_KERNEL_SIZE,
+				       desc->blksz,
+				       RECOVERY_GPT_TYPE_BASIC_DATA,
+				       NULL, false);
+	if (ret)
+		goto err;
+
+	ret = recovery_append_gpt_part(gpt, RECOVERY_SBE1V1K_GPT_MAX, &off,
+				       "rootfs",
+				       RECOVERY_SBE1V1K_ROOTFS_START,
+				       RECOVERY_SBE1V1K_ROOTFS_SIZE,
+				       desc->blksz,
+				       RECOVERY_GPT_TYPE_LINUX_FS,
+				       NULL, false);
+	if (ret)
+		goto err;
+
+	ret = recovery_append_gpt_part(gpt, RECOVERY_SBE1V1K_GPT_MAX, &off,
+				       "rootfs_data",
+				       RECOVERY_SBE1V1K_DATA_START, 0,
+				       desc->blksz,
+				       RECOVERY_GPT_TYPE_LINUX_FS,
+				       NULL, false);
+	if (ret)
+		goto err;
+
+	printf("Preserving %d current GPT partitions before LBA %llu\n",
+	       preserved, RECOVERY_SBE1V1K_CHAINLOADER_START);
+	*gptp = gpt;
+	return 0;
+
+err:
+	free(gpt);
+	return ret;
+}
 
 static int recovery_verify_factory_gpt(struct recovery_status_led_ctrl *status_leds)
 {
@@ -1861,25 +2060,25 @@ static int recovery_verify_openwrt_gpt(void)
 	if (ret || part.start != 81954 || part.size != 14336)
 		return ret ?: -EINVAL;
 
-	ret = recovery_get_mmc_part("0#0:HLOS_1", &desc, &part);
-	if (ret || part.start != 96290 || part.size != 14336)
-		return ret ?: -EINVAL;
-
 	ret = recovery_get_mmc_part(RECOVERY_SBE1V1K_CHAINLOADER_PART,
 				    &desc, &part);
-	if (ret || part.start != 110626 || part.size != 8192)
+	if (ret || part.start != RECOVERY_SBE1V1K_CHAINLOADER_START ||
+	    part.size != RECOVERY_SBE1V1K_CHAINLOADER_SIZE)
 		return ret ?: -EINVAL;
 
 	ret = recovery_get_mmc_part("0#kernel", &desc, &part);
-	if (ret || part.start != 118818 || part.size != 65536)
+	if (ret || part.start != RECOVERY_SBE1V1K_KERNEL_START ||
+	    part.size != RECOVERY_SBE1V1K_KERNEL_SIZE)
 		return ret ?: -EINVAL;
 
 	ret = recovery_get_mmc_part("0#rootfs", &desc, &part);
-	if (ret || part.start != 184354 || part.size != 2097152)
+	if (ret || part.start != RECOVERY_SBE1V1K_ROOTFS_START ||
+	    part.size != RECOVERY_SBE1V1K_ROOTFS_SIZE)
 		return ret ?: -EINVAL;
 
 	ret = recovery_get_mmc_part("0#rootfs_data", &desc, &part);
-	if (ret || part.start != 2281506 || part.size < 1048576)
+	if (ret || part.start != RECOVERY_SBE1V1K_DATA_START ||
+	    part.size < 1048576)
 		return ret ?: -EINVAL;
 
 	return 0;
@@ -2193,6 +2392,7 @@ static int recovery_repartition_factory(struct recovery_status_led_ctrl *status_
 {
 	const void *chainloader_fit;
 	size_t chainloader_size;
+	char *repartition_gpt;
 	int ret;
 
 	if (recv_off != strlen(RECOVERY_SBE1V1K_REPARTITION_TOKEN) ||
@@ -2229,7 +2429,12 @@ static int recovery_repartition_factory(struct recovery_status_led_ctrl *status_
 	prog_done = prog_erase_done;
 	recovery_service_runtime(status_leds);
 
-	ret = env_set("sbe1v1k_repartition_gpt", sbe1v1k_openwrt_gpt);
+	ret = recovery_build_sbe1v1k_gpt(&repartition_gpt);
+	if (ret)
+		return ret;
+
+	ret = env_set("sbe1v1k_repartition_gpt", repartition_gpt);
+	free(repartition_gpt);
 	if (ret)
 		return ret;
 	prog_write_done = 1;
