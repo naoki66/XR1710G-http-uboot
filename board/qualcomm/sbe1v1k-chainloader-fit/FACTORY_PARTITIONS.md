@@ -139,6 +139,8 @@ SBE1V1K_REPARTITION
 The action verifies the factory GPT, writes the migration GPT, writes the
 running FIT from `0x80000000` into `chainloader`, and updates `0:APPSBLENV`
 with `fw_setenv`-equivalent variable changes while preserving other entries.
+The APPSBLENV partition is read back after writing so the migration fails if
+the expected variables did not persist.
 
 The resulting stock U-Boot environment is:
 
@@ -146,7 +148,8 @@ The resulting stock U-Boot environment is:
 bootargs=console=ttyMSM0,115200n8 rootwait root=PARTLABEL=rootfs
 boot_chainloader=mmc dev 0 0; mmc read 0x44000000 0x0001b022 0x2000; bootm 0x44000000
 do_boot=run boot_chainloader
-bootcmd=echo "Hit ctrl+c for shell..."; if sleep 3; then run do_boot; else true; fi;
+do_nothing=true
+bootcmd=echo "Hit ctrl+c for shell..."; if sleep 3; then setenv bootargs console=ttyMSM0,115200n8 rootwait root=PARTLABEL=rootfs; run do_boot; else run do_nothing; fi;
 ```
 
 After migration, upload the OpenWrt/QSDK firmware from the same HTTP page.

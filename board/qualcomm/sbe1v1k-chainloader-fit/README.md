@@ -94,7 +94,8 @@ The recovery action:
 - keeps all existing partitions before LBA `0x1b022` untouched;
 - creates `chainloader`, `kernel`, `rootfs`, and `rootfs_data`;
 - writes the currently running FIT from `0x80000000` into `chainloader`;
-- updates `0:APPSBLENV` with `fw_setenv`-equivalent variable changes;
+- updates `0:APPSBLENV` with `fw_setenv`-equivalent variable changes and
+  verifies them by reading the partition back;
 - keeps the HTTP server running so firmware can be uploaded next.
 
 SBE1V1K is an eMMC/GPT device. Recovery writes raw GPT partitions only; it must
@@ -106,10 +107,12 @@ The installed stock U-Boot environment is equivalent to:
 bootargs='console=ttyMSM0,115200n8 rootwait root=PARTLABEL=rootfs'
 boot_chainloader='mmc dev 0 0; mmc read 0x44000000 0x0001b022 0x2000; bootm 0x44000000'
 do_boot='run boot_chainloader'
-bootcmd='echo "Hit ctrl+c for shell..."; if sleep 3; then run do_boot; else true; fi;'
+do_nothing='true'
+bootcmd='echo "Hit ctrl+c for shell..."; if sleep 3; then setenv bootargs console=ttyMSM0,115200n8 rootwait root=PARTLABEL=rootfs; run do_boot; else run do_nothing; fi;'
 ```
 
-Other factory U-Boot environment variables are preserved.
+`bootcmd` sets `bootargs` again on every boot because the vendor U-Boot resets
+it during startup. Other factory U-Boot environment variables are preserved.
 The Ethernet MAC fallback also reads `ethaddr` from `0:APPSBLENV` when the
 runtime environment does not provide one.
 

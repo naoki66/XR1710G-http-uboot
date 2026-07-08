@@ -2330,6 +2330,55 @@ out:
 	return ret;
 }
 
+static const char *recovery_env_find_value(const u8 *env_data,
+					   size_t data_size,
+					   const char *key)
+{
+	size_t off = 0;
+
+	while (off < data_size && env_data[off]) {
+		const char *entry = (const char *)env_data + off;
+		size_t remain = data_size - off;
+		size_t entry_len = strnlen(entry, remain);
+
+		if (entry_len == remain)
+			return NULL;
+
+		if (recovery_env_entry_is_key(entry, key))
+			return entry + strlen(key) + 1;
+
+		off += entry_len + 1;
+	}
+
+	return NULL;
+}
+
+static int recovery_verify_env_updates(const u8 *env_data, size_t data_size,
+				       const struct recovery_env_update *updates,
+				       size_t update_count)
+{
+	const char *value;
+	size_t i;
+
+	for (i = 0; i < update_count; i++) {
+		value = recovery_env_find_value(env_data, data_size,
+						updates[i].key);
+		if (!value) {
+			printf("APPSBLENV missing '%s' after write\n",
+			       updates[i].key);
+			return -EINVAL;
+		}
+
+		if (strcmp(value, updates[i].value)) {
+			printf("APPSBLENV mismatch for '%s' after write\n",
+			       updates[i].key);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
 static int recovery_write_appsblenv(struct recovery_status_led_ctrl *status_leds,
 				    size_t progress_base)
 {
@@ -2343,9 +2392,10 @@ static int recovery_write_appsblenv(struct recovery_status_led_ctrl *status_leds
 			"mmc dev 0 0; mmc read 0x44000000 0x0001b022 0x2000; bootm 0x44000000"
 		},
 		{ "do_boot", "run boot_chainloader" },
+		{ "do_nothing", "true" },
 		{
 			"bootcmd",
-			"echo \"Hit ctrl+c for shell...\"; if sleep 3; then run do_boot; else true; fi;"
+			"echo \"Hit ctrl+c for shell...\"; if sleep 3; then setenv bootargs console=ttyMSM0,115200n8 rootwait root=PARTLABEL=rootfs; run do_boot; else run do_nothing; fi;"
 		},
 	};
 	struct disk_partition part;
@@ -2378,6 +2428,25 @@ static int recovery_write_appsblenv(struct recovery_status_led_ctrl *status_leds
 		ret = -EIO;
 		goto out;
 	}
+
+	memset(env_buf, 0, env_bytes);
+	if (blk_dread(desc, part.start, part.size, env_buf) != part.size) {
+		printf("Failed to read back updated APPSBLENV from eMMC\n");
+		ret = -EIO;
+		goto out;
+	}
+
+	ret = recovery_verify_appsblenv_crc(env_buf, env_bytes);
+	if (ret)
+		goto out;
+
+	ret = recovery_verify_env_updates(env_buf + RECOVERY_ENV_CRC_SIZE,
+					  env_bytes - RECOVERY_ENV_CRC_SIZE,
+					  updates, ARRAY_SIZE(updates));
+	if (ret)
+		goto out;
+
+	printf("APPSBLENV update verified\n");
 
 	prog_write_done = progress_base + env_bytes;
 	prog_done = prog_erase_done + prog_write_done;
