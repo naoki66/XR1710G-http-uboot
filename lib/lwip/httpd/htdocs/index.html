@@ -261,7 +261,7 @@ button:disabled{opacity:.6;cursor:default}
 
     <div class="repartition">
       <h2>Factory eMMC migration</h2>
-      <p>Preserves factory p1-p26, including `0:HLOS` and `0:HLOS_1`; rebuilds p27+ as `chainloader`, `kernel`, `rootfs`, and `rootfs_data`.</p>
+      <p>Preserves all existing partitions before LBA `0x1b022`; rebuilds the tail as `chainloader`, `kernel`, `rootfs`, and `rootfs_data`.</p>
       <div class="repartition-grid">
         <input id="repart-token" type="text" autocomplete="off" placeholder="SBE1V1K_REPARTITION">
         <button class="danger" id="repart-btn" onclick="repartition()">Repartition factory eMMC</button>
