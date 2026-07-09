@@ -146,6 +146,8 @@ root data:    0#rootfs_data
 
 OpenWrt/QSDK boots from the second-stage chainloader via `kernel` and
 `root=PARTLABEL=rootfs`. It does not depend on `0:HLOS`.
+If loading or booting the `kernel` partition fails and `bootm` returns to
+U-Boot, the second-stage chainloader starts `http_recovery` automatically.
 
 ## Offline eMMC Recovery
 
