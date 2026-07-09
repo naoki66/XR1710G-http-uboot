@@ -26,11 +26,9 @@
 #include <linux/string.h>
 #include <linux/libfdt.h>
 #include <console.h>
-#include <asm/gpio.h>
 #include <asm/global_data.h>
 #include <dm/pinctrl.h>
 #include <dm/uclass.h>
-#include <dt-bindings/gpio/gpio.h>
 
 #ifdef crc32
 #undef crc32
@@ -126,7 +124,6 @@ static bool recovery_board_is_sbe1v1k(void)
 #define RECOVERY_LED_PORTS     2
 #define RECOVERY_LED_POLL_MS   100
 #define RECOVERY_STATUS_LED_MAX           8
-#define RECOVERY_STATUS_PWM_PERIOD_MS     1
 #define RECOVERY_STATUS_PWM_PERIOD_NS     1000000U
 #define RECOVERY_STATUS_HW_PWM_UPDATE_MS  20
 #define RECOVERY_STATUS_BREATHE_PERIOD_MS 3200
@@ -238,14 +235,6 @@ struct recovery_led_ctrl {
 	ulong last_poll;
 };
 
-struct recovery_gpio_pin {
-	struct gpio_desc desc;
-	ofnode node;
-	u8 gpio;
-	bool active_low;
-	bool valid;
-};
-
 struct recovery_status_pwm_led {
 	struct udevice *pwm;
 	uint channel;
@@ -255,9 +244,7 @@ struct recovery_status_pwm_led {
 };
 
 struct recovery_status_led_ctrl {
-	struct recovery_gpio_pin leds[RECOVERY_STATUS_LED_MAX];
 	struct recovery_status_pwm_led pwm_leds[RECOVERY_STATUS_LED_MAX];
-	int led_count;
 	int pwm_count;
 	bool use_pwm;
 	ulong start_ms;
@@ -374,118 +361,13 @@ static void recovery_led_set_pin(u8 gpio, int on)
 	recovery_gpio_set_value(gpio, true, on);
 }
 
-static void recovery_status_led_set(const struct recovery_gpio_pin *pin, int on)
-{
-	if (!pin->valid)
-		return;
-
-	if (dm_gpio_is_valid(&pin->desc))
-		dm_gpio_set_value(&pin->desc, on);
-}
-
-static void recovery_gpio_pin_release(struct recovery_gpio_pin *pin)
-{
-	if (!pin->valid)
-		return;
-
-	if (dm_gpio_is_valid(&pin->desc)) {
-		dm_gpio_set_value(&pin->desc, 0);
-		dm_gpio_free(NULL, &pin->desc);
-	}
-
-	memset(pin, 0, sizeof(*pin));
-}
-
-static ofnode recovery_led_alias_node(const char *alias)
-{
-	ofnode aliases;
-	const char *path;
-
-	aliases = ofnode_path("/aliases");
-	if (!ofnode_valid(aliases))
-		return ofnode_null();
-
-	path = ofnode_read_string(aliases, alias);
-	if (!path)
-		return ofnode_null();
-
-	return ofnode_path(path);
-}
-
-static int recovery_led_node_to_gpio(ofnode node, struct recovery_gpio_pin *pin)
-{
-	struct ofnode_phandle_args args;
-	int ret;
-
-	memset(pin, 0, sizeof(*pin));
-
-	if (!ofnode_valid(node))
-		return -ENOENT;
-
-	ret = ofnode_parse_phandle_with_args(node, "gpios", "#gpio-cells", 0, 0,
-					     &args);
-	if (ret)
-		return ret;
-
-	if (args.args_count < 1)
-		return -EINVAL;
-
-	pin->gpio = args.args[0];
-	pin->active_low = args.args_count > 1 &&
-			  (args.args[1] & GPIO_ACTIVE_LOW);
-	pin->node = node;
-	pin->valid = true;
-
-	return 0;
-}
-
-static void recovery_status_led_add(struct recovery_status_led_ctrl *ctrl,
-				    const struct recovery_gpio_pin *pin)
-{
-	int i;
-
-	if (!pin->valid)
-		return;
-
-	for (i = 0; i < ctrl->led_count; i++) {
-		if (ctrl->leds[i].gpio == pin->gpio)
-			return;
-	}
-
-	if (ctrl->led_count >= ARRAY_SIZE(ctrl->leds))
-		return;
-
-	ctrl->leds[ctrl->led_count++] = *pin;
-}
-
-static void recovery_status_led_collect_alias(struct recovery_status_led_ctrl *ctrl,
-					      const char *alias)
-{
-	struct recovery_gpio_pin pin;
-
-	if (!recovery_led_node_to_gpio(recovery_led_alias_node(alias), &pin))
-		recovery_status_led_add(ctrl, &pin);
-}
-
-static int recovery_status_led_request(struct recovery_gpio_pin *pin)
-{
-	int ret;
-
-	ret = gpio_request_by_name_nodev(pin->node, "gpios", 0, &pin->desc,
-					 GPIOD_IS_OUT);
-	if (ret)
-		return ret;
-
-	pin->gpio = pin->desc.offset;
-	pin->active_low = pin->desc.flags & GPIOD_ACTIVE_LOW;
-
-	return dm_gpio_set_value(&pin->desc, 0);
-}
-
 #if CONFIG_IS_ENABLED(DM_PWM)
 static void recovery_status_pwm_shutdown(struct recovery_status_led_ctrl *ctrl)
 {
 	int i;
+
+	if (!ctrl->pwm_count)
+		return;
 
 	for (i = 0; i < ctrl->pwm_count; i++) {
 		struct recovery_status_pwm_led *led = &ctrl->pwm_leds[i];
@@ -496,6 +378,8 @@ static void recovery_status_pwm_shutdown(struct recovery_status_led_ctrl *ctrl)
 		pwm_set_config(led->pwm, led->channel, led->period_ns, 0);
 		pwm_set_enable(led->pwm, led->channel, true);
 	}
+
+	ctrl->use_pwm = false;
 }
 
 static int recovery_status_pwm_select_state(struct recovery_status_led_ctrl *ctrl)
@@ -639,86 +523,20 @@ static int recovery_status_pwm_init(struct recovery_status_led_ctrl *ctrl)
 
 static void recovery_status_led_release(struct recovery_status_led_ctrl *ctrl)
 {
-	int i;
-
-	for (i = 0; i < ctrl->led_count; i++)
-		recovery_gpio_pin_release(&ctrl->leds[i]);
-
 	recovery_status_pwm_shutdown(ctrl);
 	memset(ctrl, 0, sizeof(*ctrl));
 }
 
 static int recovery_status_led_init(struct recovery_status_led_ctrl *ctrl)
 {
-	static const char *const status_aliases[] = {
-		"led-boot",
-		"led-running",
-		"led-failsafe",
-		"led-upgrade",
-	};
-	ofnode leds, node;
-	int i, keep = 0;
+	int ret;
 
 	memset(ctrl, 0, sizeof(*ctrl));
-
-	leds = ofnode_path("/leds");
-	if (ofnode_valid(leds)) {
-		ofnode_for_each_subnode(node, leds) {
-			const char *function;
-			struct recovery_gpio_pin pin;
-
-			function = ofnode_read_string(node, "function");
-			if (!function || strcmp(function, "status"))
-				continue;
-
-			if (!recovery_led_node_to_gpio(node, &pin))
-				recovery_status_led_add(ctrl, &pin);
-		}
-	}
-
-	for (i = 0; i < ARRAY_SIZE(status_aliases); i++)
-		recovery_status_led_collect_alias(ctrl, status_aliases[i]);
-
-	if (!ctrl->led_count)
-		return -ENOENT;
-
-	for (i = 0; i < ctrl->led_count; i++) {
-		int ret;
-
-		ret = recovery_status_led_request(&ctrl->leds[i]);
-		if (ret) {
-			printf("Recovery status LED gpio%u request failed: %d\n",
-			       ctrl->leds[i].gpio, ret);
-			recovery_gpio_pin_release(&ctrl->leds[i]);
-			continue;
-		}
-
-		if (keep != i) {
-			ctrl->leds[keep] = ctrl->leds[i];
-			memset(&ctrl->leds[i], 0, sizeof(ctrl->leds[i]));
-		}
-		keep++;
-	}
-
-	ctrl->led_count = keep;
-
-	if (!ctrl->led_count) {
-		recovery_status_led_release(ctrl);
-		return -ENODEV;
-	}
-
 	ctrl->start_ms = get_timer(0);
 
-	printf("Recovery status LEDs:");
-	for (i = 0; i < ctrl->led_count; i++)
-		printf(" gpio%u%s", ctrl->leds[i].gpio,
-		       ctrl->leds[i].active_low ? "(L)" : "");
-	printf("\n");
-
-	i = recovery_status_pwm_init(ctrl);
-	if (i && i != -ENOENT && i != -ENOSYS)
-		printf("Recovery hardware PWM LEDs unavailable (%d), using GPIO\n",
-		       i);
+	ret = recovery_status_pwm_init(ctrl);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -787,15 +605,6 @@ static u32 recovery_status_led_duty_fp(int led_count, int idx, ulong elapsed)
 	return min_t(u32, pwm_phase, RECOVERY_STATUS_BRIGHTNESS_FP);
 }
 
-static int recovery_status_led_duty_ms(int led_count, int idx, ulong elapsed)
-{
-	u32 duty_fp = recovery_status_led_duty_fp(led_count, idx, elapsed);
-
-	return (duty_fp * RECOVERY_STATUS_PWM_PERIOD_MS +
-		RECOVERY_STATUS_BRIGHTNESS_FP / 2) /
-	       RECOVERY_STATUS_BRIGHTNESS_FP;
-}
-
 #if CONFIG_IS_ENABLED(DM_PWM)
 static void recovery_status_pwm_poll(struct recovery_status_led_ctrl *ctrl,
 				     ulong now, ulong elapsed)
@@ -835,45 +644,22 @@ static void recovery_status_pwm_poll(struct recovery_status_led_ctrl *ctrl,
 
 static void recovery_status_led_poll(struct recovery_status_led_ctrl *ctrl)
 {
-	ulong elapsed, now, pwm_phase;
-	int duty_ms;
-	int i;
+	ulong elapsed, now;
 
-	if (!ctrl->led_count && !ctrl->use_pwm)
+	if (!ctrl->use_pwm)
 		return;
 
 	now = get_timer(0);
 	elapsed = now - ctrl->start_ms;
-
-	if (ctrl->use_pwm) {
-		recovery_status_pwm_poll(ctrl, now, elapsed);
-		return;
-	}
-
-	pwm_phase = elapsed % RECOVERY_STATUS_PWM_PERIOD_MS;
-
-	for (i = 0; i < ctrl->led_count; i++) {
-		duty_ms = recovery_status_led_duty_ms(ctrl->led_count, i,
-						      elapsed);
-		recovery_status_led_set(&ctrl->leds[i],
-					duty_ms && pwm_phase < duty_ms);
-	}
+	recovery_status_pwm_poll(ctrl, now, elapsed);
 }
 
 static void recovery_status_led_stop(struct recovery_status_led_ctrl *ctrl)
 {
-	int i;
-
-	if (!ctrl->led_count)
+	if (!ctrl->use_pwm)
 		return;
 
-	if (ctrl->use_pwm) {
-		recovery_status_pwm_shutdown(ctrl);
-		return;
-	}
-
-	for (i = 0; i < ctrl->led_count; i++)
-		recovery_status_led_set(&ctrl->leds[i], 0);
+	recovery_status_pwm_shutdown(ctrl);
 }
 
 enum recovery_dhcp_request_verdict {
