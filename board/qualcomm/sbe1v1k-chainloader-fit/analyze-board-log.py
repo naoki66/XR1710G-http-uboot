@@ -61,6 +61,13 @@ PPE_TX_PATH_RE = re.compile(
     r"\bppe_tx_path:.*?txbytes=0x(?P<txbytes>[0-9a-fA-F]+)"
 )
 PING_ALIVE_RE = re.compile(r"\bhost\s+(?P<host>\S+)\s+is alive\b")
+PHY_LINK_RE = re.compile(
+    r"\bPHY(?P<port>\d+)\s+(?P<link>Up|Down)\s+Speed\s*:\s*"
+    r"(?P<speed>\d+)\s+(?P<duplex>Full|Half)\s+duplex"
+)
+SNAPSHOT_PORT_RE = re.compile(
+    r"NSS snapshot:\s+requested_port=(?P<port>\d+)\s+requested_queue=(?P<queue>\d+)"
+)
 
 
 def repo_release():
@@ -142,6 +149,21 @@ def collect(text):
     for match in PPE_TX_PATH_RE.finditer(text):
         counters.setdefault("ppe_tx_path_bytes", []).append(int(match.group("txbytes"), 16))
 
+    phy_links = []
+    for match in PHY_LINK_RE.finditer(text):
+        phy_links.append(
+            {
+                "port": int(match.group("port")),
+                "link": match.group("link"),
+                "speed": int(match.group("speed")),
+                "duplex": match.group("duplex"),
+            }
+        )
+
+    snapshot_ports = [
+        int(match.group("port")) for match in SNAPSHOT_PORT_RE.finditer(text)
+    ]
+
     return {
         "banners": banners,
         "tx_lines": tx_lines,
@@ -152,6 +174,8 @@ def collect(text):
         "rxdesc_init": rxdesc_init,
         "rxfill_prime": rxfill_prime,
         "counters": counters,
+        "phy_links": phy_links,
+        "snapshot_ports": snapshot_ports,
         "alive_hosts": PING_ALIVE_RE.findall(text),
         "has_snapshot": "NSS snapshot:" in text,
         "has_ping_fail": "ping failed" in text,
@@ -184,6 +208,13 @@ def analyze(data, expected_release):
     misc_nonzero = sorted(set(value for value in data["misc_values"] if value))
     txcmpl_nonzero = [entry for entry in data["txcmpl_errors"] if entry["errors"]]
     last_summary = data["summaries"][-1] if data["summaries"] else None
+    latest_phy_links = {}
+    for entry in data["phy_links"]:
+        latest_phy_links[entry["port"]] = entry
+    up_ports = sorted(
+        port for port, entry in latest_phy_links.items() if entry["link"] == "Up"
+    )
+    recommended_port = up_ports[0] if len(up_ports) == 1 else 5
 
     print("SBE1V1K U-Boot network log analysis")
     print(f"Expected release: {expected_release or '<not set>'}")
@@ -270,6 +301,20 @@ def analyze(data, expected_release):
         print()
         print_list("Ping success observed:", data["alive_hosts"])
 
+    if latest_phy_links:
+        print()
+        print("Latest PHY link state:")
+        for port in sorted(latest_phy_links):
+            entry = latest_phy_links[port]
+            print(
+                f"  port{port}: {entry['link']} {entry['speed']} "
+                f"{entry['duplex']} duplex"
+            )
+
+    if data["snapshot_ports"]:
+        print()
+        print_list("Snapshot PPE ports:", data["snapshot_ports"])
+
     print()
     print("Next-step verdict:")
     if expected_release and not saw_expected:
@@ -288,7 +333,20 @@ def analyze(data, expected_release):
         print("- No short EDMA TX evidence found. Capture ping plus nss_debug snapshot <port>.")
 
     if data["has_ping_fail"] and not data["has_snapshot"]:
-        print("- The log has ping failure but no snapshot; run nss_debug snapshot 3 immediately after failure.")
+        print(
+            "- The log has ping failure but no snapshot; run "
+            f"nss_debug snapshot {recommended_port} immediately after failure."
+        )
+    elif data["has_ping_fail"] and up_ports and data["snapshot_ports"]:
+        wrong_ports = sorted(
+            set(port for port in data["snapshot_ports"] if port not in up_ports)
+        )
+        if wrong_ports:
+            print(
+                "- Snapshot port does not match the latest linked PHY; "
+                f"linked={','.join(map(str, up_ports))} "
+                f"captured={','.join(map(str, wrong_ports))}."
+            )
 
 
 def main():

@@ -71,7 +71,21 @@ By default it compares the log against `include/config/uboot.release`, reports
 whether the expected U-Boot banner was seen, checks if short EDMA TX frames were
 padded to `hw_len=49`, decodes EDMA misc bits such as `DATA_LEN_ERR` and
 `TX_TIMEOUT`, and summarizes TX completion errors and PPE/GMAC TX counters when
-they are present in the log.
+they are present in the log. It also reads the latest `PHY<N> Up/Down` lines and
+checks that snapshots were captured for the linked PPE port.
+
+The physical LAN1 socket is PPE port 5, backed by QCA8081 address 28 and
+UNIPHY1 channel 0. Capture both sides of a failed transaction with:
+
+```text
+nss_debug trace on
+nss_debug snapshot 5
+ping 192.168.255.2
+nss_debug snapshot 5
+```
+
+Use the PPE port printed by the latest `PHY<N> Up` line when testing another
+socket. Port 3 is LAN2, not LAN1.
 
 ## HTTP Migration
 
