@@ -17,6 +17,7 @@
 #include <net-lwip.h>
 #include <net.h>
 #include <part.h>
+#include <pwm.h>
 #include <initcall.h>
 #include <ubi_uboot.h>
 #include <watchdog.h>
@@ -27,6 +28,8 @@
 #include <console.h>
 #include <asm/gpio.h>
 #include <asm/global_data.h>
+#include <dm/pinctrl.h>
+#include <dm/uclass.h>
 #include <dt-bindings/gpio/gpio.h>
 
 #ifdef crc32
@@ -124,12 +127,16 @@ static bool recovery_board_is_sbe1v1k(void)
 #define RECOVERY_LED_POLL_MS   100
 #define RECOVERY_STATUS_LED_MAX           8
 #define RECOVERY_STATUS_PWM_PERIOD_MS     1
+#define RECOVERY_STATUS_PWM_PERIOD_NS     1000000U
+#define RECOVERY_STATUS_HW_PWM_UPDATE_MS  20
 #define RECOVERY_STATUS_BREATHE_PERIOD_MS 3200
 #define RECOVERY_STATUS_BREATHE_HALF_MS   (RECOVERY_STATUS_BREATHE_PERIOD_MS / 2)
 #define RECOVERY_STATUS_SWEEP_STEP_MS     1400
 #define RECOVERY_STATUS_OVERLAP_FP        (2 * 256)
 #define RECOVERY_STATUS_BRIGHTNESS_FP     256
 #define RECOVERY_STATUS_BREATHE_MIN_FP    64
+#define RECOVERY_STATUS_PWM_NODE          "/recovery-status-pwm-leds"
+#define RECOVERY_PWM_POLARITY_INVERTED    BIT(0)
 
 #define RECOVERY_GPIO_SYSCTL_BASE      0x1fbf0200
 #define RECOVERY_CHIP_SCU_BASE         0x1fa20000
@@ -239,10 +246,22 @@ struct recovery_gpio_pin {
 	bool valid;
 };
 
+struct recovery_status_pwm_led {
+	struct udevice *pwm;
+	uint channel;
+	uint period_ns;
+	bool active_low;
+	bool valid;
+};
+
 struct recovery_status_led_ctrl {
 	struct recovery_gpio_pin leds[RECOVERY_STATUS_LED_MAX];
+	struct recovery_status_pwm_led pwm_leds[RECOVERY_STATUS_LED_MAX];
 	int led_count;
+	int pwm_count;
+	bool use_pwm;
 	ulong start_ms;
+	ulong last_pwm_update;
 };
 
 struct recovery_dhcp_server {
@@ -463,6 +482,161 @@ static int recovery_status_led_request(struct recovery_gpio_pin *pin)
 	return dm_gpio_set_value(&pin->desc, 0);
 }
 
+#if CONFIG_IS_ENABLED(DM_PWM)
+static void recovery_status_pwm_shutdown(struct recovery_status_led_ctrl *ctrl)
+{
+	int i;
+
+	for (i = 0; i < ctrl->pwm_count; i++) {
+		struct recovery_status_pwm_led *led = &ctrl->pwm_leds[i];
+
+		if (!led->valid)
+			continue;
+
+		pwm_set_config(led->pwm, led->channel, led->period_ns, 0);
+		pwm_set_enable(led->pwm, led->channel, true);
+	}
+}
+
+static int recovery_status_pwm_select_state(struct recovery_status_led_ctrl *ctrl)
+{
+	int i, j, ret;
+
+	for (i = 0; i < ctrl->pwm_count; i++) {
+		struct udevice *pwm = ctrl->pwm_leds[i].pwm;
+		bool seen = false;
+
+		for (j = 0; j < i; j++) {
+			if (ctrl->pwm_leds[j].pwm == pwm) {
+				seen = true;
+				break;
+			}
+		}
+		if (seen)
+			continue;
+
+		ret = pinctrl_select_state(pwm, "recovery");
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int recovery_status_pwm_parse_led(ofnode node,
+					 struct recovery_status_pwm_led *led)
+{
+	struct ofnode_phandle_args args;
+	struct udevice *pwm;
+	int ret;
+
+	memset(led, 0, sizeof(*led));
+
+	ret = ofnode_parse_phandle_with_args(node, "pwms", "#pwm-cells", 0, 0,
+					     &args);
+	if (ret)
+		return ret;
+	if (args.args_count < 2)
+		return -EINVAL;
+
+	ret = uclass_get_device_by_ofnode(UCLASS_PWM, args.node, &pwm);
+	if (ret)
+		return ret;
+
+	led->pwm = pwm;
+	led->channel = args.args[0];
+	led->period_ns = args.args[1] ? args.args[1] :
+			 RECOVERY_STATUS_PWM_PERIOD_NS;
+	led->active_low = args.args_count > 2 &&
+			  (args.args[2] & RECOVERY_PWM_POLARITY_INVERTED);
+	led->valid = true;
+
+	return 0;
+}
+
+static int recovery_status_pwm_init(struct recovery_status_led_ctrl *ctrl)
+{
+	ofnode pwm_leds, node;
+	int i, ret;
+
+	pwm_leds = ofnode_path(RECOVERY_STATUS_PWM_NODE);
+	if (!ofnode_valid(pwm_leds))
+		return -ENOENT;
+
+	ctrl->pwm_count = 0;
+	ofnode_for_each_subnode(node, pwm_leds) {
+		if (ctrl->pwm_count >= ARRAY_SIZE(ctrl->pwm_leds))
+			break;
+
+		ret = recovery_status_pwm_parse_led(node,
+						    &ctrl->pwm_leds[ctrl->pwm_count]);
+		if (ret) {
+			printf("Recovery PWM LED %s parse failed: %d\n",
+			       ofnode_get_name(node), ret);
+			goto err;
+		}
+
+		ctrl->pwm_count++;
+	}
+
+	if (!ctrl->pwm_count)
+		return -ENOENT;
+
+	for (i = 0; i < ctrl->pwm_count; i++) {
+		struct recovery_status_pwm_led *led = &ctrl->pwm_leds[i];
+
+		ret = pwm_set_invert(led->pwm, led->channel, led->active_low);
+		if (ret)
+			goto err;
+
+		ret = pwm_set_config(led->pwm, led->channel, led->period_ns, 0);
+		if (ret)
+			goto err;
+	}
+
+	ret = recovery_status_pwm_select_state(ctrl);
+	if (ret)
+		goto err;
+
+	for (i = 0; i < ctrl->pwm_count; i++) {
+		struct recovery_status_pwm_led *led = &ctrl->pwm_leds[i];
+
+		ret = pwm_set_enable(led->pwm, led->channel, true);
+		if (ret)
+			goto err;
+	}
+
+	ctrl->use_pwm = true;
+	ctrl->last_pwm_update = 0;
+
+	printf("Recovery status LEDs using hardware PWM:");
+	for (i = 0; i < ctrl->pwm_count; i++)
+		printf(" ch%u/%uns%s", ctrl->pwm_leds[i].channel,
+		       ctrl->pwm_leds[i].period_ns,
+		       ctrl->pwm_leds[i].active_low ? "(L)" : "");
+	printf("\n");
+
+	return 0;
+
+err:
+	recovery_status_pwm_shutdown(ctrl);
+	memset(ctrl->pwm_leds, 0, sizeof(ctrl->pwm_leds));
+	ctrl->pwm_count = 0;
+	ctrl->use_pwm = false;
+
+	return ret;
+}
+#else
+static void recovery_status_pwm_shutdown(struct recovery_status_led_ctrl *ctrl)
+{
+}
+
+static int recovery_status_pwm_init(struct recovery_status_led_ctrl *ctrl)
+{
+	return -ENOSYS;
+}
+#endif
+
 static void recovery_status_led_release(struct recovery_status_led_ctrl *ctrl)
 {
 	int i;
@@ -470,6 +644,7 @@ static void recovery_status_led_release(struct recovery_status_led_ctrl *ctrl)
 	for (i = 0; i < ctrl->led_count; i++)
 		recovery_gpio_pin_release(&ctrl->leds[i]);
 
+	recovery_status_pwm_shutdown(ctrl);
 	memset(ctrl, 0, sizeof(*ctrl));
 }
 
@@ -540,6 +715,11 @@ static int recovery_status_led_init(struct recovery_status_led_ctrl *ctrl)
 		       ctrl->leds[i].active_low ? "(L)" : "");
 	printf("\n");
 
+	i = recovery_status_pwm_init(ctrl);
+	if (i && i != -ENOENT && i != -ENOSYS)
+		printf("Recovery hardware PWM LEDs unavailable (%d), using GPIO\n",
+		       i);
+
 	return 0;
 }
 
@@ -561,16 +741,15 @@ static u32 recovery_status_led_breath_fp(ulong elapsed)
 		RECOVERY_STATUS_BREATHE_HALF_MS);
 }
 
-static ulong recovery_status_led_position_fp(struct recovery_status_led_ctrl *ctrl,
-					     ulong elapsed)
+static ulong recovery_status_led_position_fp(int led_count, ulong elapsed)
 {
 	ulong range_fp, phase;
 	int span;
 
-	if (ctrl->led_count <= 1)
+	if (led_count <= 1)
 		return 0;
 
-	span = ctrl->led_count - 1;
+	span = led_count - 1;
 	range_fp = span * RECOVERY_STATUS_BRIGHTNESS_FP;
 	phase = elapsed % (2 * span * RECOVERY_STATUS_SWEEP_STEP_MS);
 
@@ -584,14 +763,13 @@ static ulong recovery_status_led_position_fp(struct recovery_status_led_ctrl *ct
 			   RECOVERY_STATUS_SWEEP_STEP_MS);
 }
 
-static int recovery_status_led_duty_ms(struct recovery_status_led_ctrl *ctrl,
-				       int idx, ulong elapsed)
+static u32 recovery_status_led_duty_fp(int led_count, int idx, ulong elapsed)
 {
 	ulong center_fp, pwm_phase;
 	u32 breath_fp, weight_fp, dist_fp;
 	ulong led_pos_fp;
 
-	center_fp = recovery_status_led_position_fp(ctrl, elapsed);
+	center_fp = recovery_status_led_position_fp(led_count, elapsed);
 	led_pos_fp = idx * RECOVERY_STATUS_BRIGHTNESS_FP;
 	dist_fp = center_fp > led_pos_fp ? center_fp - led_pos_fp :
 					  led_pos_fp - center_fp;
@@ -606,10 +784,54 @@ static int recovery_status_led_duty_ms(struct recovery_status_led_ctrl *ctrl,
 	pwm_phase = (pwm_phase + RECOVERY_STATUS_BRIGHTNESS_FP / 2) /
 		    RECOVERY_STATUS_BRIGHTNESS_FP;
 
-	return (pwm_phase * RECOVERY_STATUS_PWM_PERIOD_MS +
+	return min_t(u32, pwm_phase, RECOVERY_STATUS_BRIGHTNESS_FP);
+}
+
+static int recovery_status_led_duty_ms(int led_count, int idx, ulong elapsed)
+{
+	u32 duty_fp = recovery_status_led_duty_fp(led_count, idx, elapsed);
+
+	return (duty_fp * RECOVERY_STATUS_PWM_PERIOD_MS +
 		RECOVERY_STATUS_BRIGHTNESS_FP / 2) /
 	       RECOVERY_STATUS_BRIGHTNESS_FP;
 }
+
+#if CONFIG_IS_ENABLED(DM_PWM)
+static void recovery_status_pwm_poll(struct recovery_status_led_ctrl *ctrl,
+				     ulong now, ulong elapsed)
+{
+	int i;
+
+	if (!ctrl->use_pwm || !ctrl->pwm_count)
+		return;
+
+	if (ctrl->last_pwm_update &&
+	    now - ctrl->last_pwm_update < RECOVERY_STATUS_HW_PWM_UPDATE_MS)
+		return;
+
+	ctrl->last_pwm_update = now;
+
+	for (i = 0; i < ctrl->pwm_count; i++) {
+		struct recovery_status_pwm_led *led = &ctrl->pwm_leds[i];
+		u32 duty_fp;
+		u64 duty_ns;
+
+		if (!led->valid)
+			continue;
+
+		duty_fp = recovery_status_led_duty_fp(ctrl->pwm_count, i,
+						      elapsed);
+		duty_ns = (u64)led->period_ns * duty_fp /
+			  RECOVERY_STATUS_BRIGHTNESS_FP;
+		pwm_set_config(led->pwm, led->channel, led->period_ns, duty_ns);
+	}
+}
+#else
+static void recovery_status_pwm_poll(struct recovery_status_led_ctrl *ctrl,
+				     ulong now, ulong elapsed)
+{
+}
+#endif
 
 static void recovery_status_led_poll(struct recovery_status_led_ctrl *ctrl)
 {
@@ -617,15 +839,22 @@ static void recovery_status_led_poll(struct recovery_status_led_ctrl *ctrl)
 	int duty_ms;
 	int i;
 
-	if (!ctrl->led_count)
+	if (!ctrl->led_count && !ctrl->use_pwm)
 		return;
 
 	now = get_timer(0);
 	elapsed = now - ctrl->start_ms;
+
+	if (ctrl->use_pwm) {
+		recovery_status_pwm_poll(ctrl, now, elapsed);
+		return;
+	}
+
 	pwm_phase = elapsed % RECOVERY_STATUS_PWM_PERIOD_MS;
 
 	for (i = 0; i < ctrl->led_count; i++) {
-		duty_ms = recovery_status_led_duty_ms(ctrl, i, elapsed);
+		duty_ms = recovery_status_led_duty_ms(ctrl->led_count, i,
+						      elapsed);
 		recovery_status_led_set(&ctrl->leds[i],
 					duty_ms && pwm_phase < duty_ms);
 	}
@@ -637,6 +866,11 @@ static void recovery_status_led_stop(struct recovery_status_led_ctrl *ctrl)
 
 	if (!ctrl->led_count)
 		return;
+
+	if (ctrl->use_pwm) {
+		recovery_status_pwm_shutdown(ctrl);
+		return;
+	}
 
 	for (i = 0; i < ctrl->led_count; i++)
 		recovery_status_led_set(&ctrl->leds[i], 0);

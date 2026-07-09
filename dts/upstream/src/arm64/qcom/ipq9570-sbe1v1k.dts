@@ -85,6 +85,22 @@
 		};
 	};
 
+	recovery-status-pwm-leds {
+		compatible = "qcom,sbe1v1k-recovery-pwm-leds";
+
+		led-blue {
+			pwms = <&pwm 2 1000000 0>;
+		};
+
+		led-red {
+			pwms = <&pwm 0 1000000 0>;
+		};
+
+		led-green {
+			pwms = <&pwm 1 1000000 0>;
+		};
+	};
+
 	fan: pwm-fan {
 		compatible = "pwm-fan";
 		pwms = <&pwm 3 40000 0>;
@@ -161,7 +177,8 @@
 
 &pwm {
 	pinctrl-0 = <&pwm_pins>;
-	pinctrl-names = "default";
+	pinctrl-1 = <&status_pwm_pins>;
+	pinctrl-names = "default", "recovery";
 	status = "okay";
 };
 
@@ -372,6 +389,14 @@
 	pwm_pins: pwm-pins {
 		pwm {
 			pins = "gpio53";
+			function = "pwm";
+			drive-strength = <8>;
+		};
+	};
+
+	status_pwm_pins: status-pwm-pins {
+		pwm {
+			pins = "gpio44", "gpio45", "gpio56";
 			function = "pwm";
 			drive-strength = <8>;
 		};

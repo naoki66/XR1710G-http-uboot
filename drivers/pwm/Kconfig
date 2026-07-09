@@ -74,6 +74,13 @@ config PWM_MTK
 	  This PWM is found on MT7622, MT7623, and MT7629. It supports a
 	  programmable period and duty cycle.
 
+config PWM_QCOM_IPQ
+	bool "Enable support for Qualcomm IPQ PWM"
+	depends on CLK
+	help
+	  This PWM is found on Qualcomm IPQ SoCs. It supports four independent
+	  programmable PWM channels.
+
 config PWM_ROCKCHIP
 	bool "Enable support for the Rockchip PWM"
 	depends on ARCH_ROCKCHIP

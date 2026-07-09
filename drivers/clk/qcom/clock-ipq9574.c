@@ -39,6 +39,8 @@
 #define GCC_SDCC1_AHB_CBCR			0x33034
 #define GCC_SDCC1_ICE_CORE_CMD_RCGR		0x33018
 #define GCC_SDCC1_ICE_CORE_CBCR			0x33030
+#define GCC_ADSS_PWM_CMD_RCGR			0x1C004
+#define GCC_ADSS_PWM_CBCR			0x1C00C
 
 /* BLSP QUP SPI clock register */
 #define BLSP1_QUP1_SPI_BCR		0x02000
@@ -131,9 +133,11 @@
 #define CLK_25_MHZ			(25000000UL)
 #define CLK_78_125_MHZ			(78125000UL)
 #define CLK_50_MHZ			(50000000UL)
+#define CLK_100_MHZ			(100000000UL)
 #define CLK_125_MHZ			(125000000UL)
 #define CLK_156_25_MHZ			(156250000UL)
 #define CLK_312_5_MHZ			(312500000UL)
+#define CLK_24_MHZ			(24000000UL)
 
 #define GCC_NSSNOC_MEMNOC_BFDCD_SRC_SEL_GPLL0_OUT_MAIN	BIT(8)
 #define GCC_QDSS_AT_SRC_SEL_GPLL0_OUT_MAIN		BIT(8)
@@ -417,6 +421,22 @@ static ulong ipq9574_set_rate(struct clk *clk, ulong rate)
 		clk_rcg_set_rate_v2(priv->base, GCC_QDSS_AT_CMD_RCGR,
 				    0, 9, 0,
 				    GCC_QDSS_AT_SRC_SEL_GPLL0_OUT_MAIN);
+		break;
+	case ADSS_PWM_CLK_SRC:
+	case GCC_ADSS_PWM_CLK:
+		switch (rate) {
+		case CLK_24_MHZ:
+			clk_rcg_set_rate(priv->base, GCC_ADSS_PWM_CMD_RCGR,
+					 0, CFG_CLK_SRC_CXO);
+			break;
+		case CLK_100_MHZ:
+			clk_rcg_set_rate(priv->base, GCC_ADSS_PWM_CMD_RCGR,
+					 8, CFG_CLK_SRC_GPLL0);
+			break;
+		default:
+			return -EINVAL;
+		}
+		clk->rate = rate;
 		break;
 	case GCC_PCIE0_AUX_CLK:
 		fallthrough;
@@ -709,6 +729,7 @@ static const struct gate_clk ipq9574_clks[] = {
 	GATE_CLK(GCC_SDCC1_AHB_CLK,		0x33034, 0x00000001),
 	GATE_CLK(GCC_SDCC1_APPS_CLK,		0x3302C, 0x00000001),
 	GATE_CLK(GCC_SDCC1_ICE_CORE_CLK,	GCC_SDCC1_ICE_CORE_CBCR, 0x00000001),
+	GATE_CLK(GCC_ADSS_PWM_CLK,		GCC_ADSS_PWM_CBCR, 0x00000001),
 	/*ETHERNET*/
 	GATE_CLK(GCC_MDIO_AHB_CLK,		0x17040, 0x00000001),
 	GATE_CLK(GCC_MEM_NOC_NSSNOC_CLK,	0x19014, 0x00000001),
