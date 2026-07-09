@@ -153,6 +153,7 @@ bootcmd=echo "Hit ctrl+c for shell..."; if sleep 3; then setenv bootargs console
 ```
 
 After migration, upload the OpenWrt/QSDK firmware from the same HTTP page.
-Firmware uploads write `kernel` and `rootfs`, then clear the beginning of
-`rootfs_data`. OpenWrt/QSDK boots with `root=PARTLABEL=rootfs` and does not
-depend on `0:HLOS`.
+Firmware uploads fully erase `kernel`, `rootfs`, and `rootfs_data`, then write
+the kernel FIT and SquashFS payloads. Chainloader uploads fully erase the
+`chainloader` partition before writing the raw FIT. OpenWrt/QSDK boots with
+`root=PARTLABEL=rootfs` and does not depend on `0:HLOS`.

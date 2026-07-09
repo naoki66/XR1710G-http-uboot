@@ -93,13 +93,22 @@ The recovery action:
 - rewrites only the area starting at LBA `0x1b022`;
 - keeps all existing partitions before LBA `0x1b022` untouched;
 - creates `chainloader`, `kernel`, `rootfs`, and `rootfs_data`;
-- writes the currently running FIT from `0x80000000` into `chainloader`;
+- fully erases `chainloader`, then writes the currently running FIT from
+  `0x80000000` into it;
 - updates `0:APPSBLENV` with `fw_setenv`-equivalent variable changes and
   verifies them by reading the partition back;
 - keeps the HTTP server running so firmware can be uploaded next.
 
 SBE1V1K is an eMMC/GPT device. Recovery writes raw GPT partitions only; it must
 not format, create, resize, or write UBI volumes on this board.
+
+Every recovery image update erases the complete target partition before
+writing any payload. A firmware upload fully erases `kernel`, `rootfs`, and
+`rootfs_data`, then writes the kernel FIT and SquashFS payload. A chainloader
+upload fully erases `chainloader`, then writes the raw chainloader FIT.
+Recovery uses exact eMMC erase/TRIM when the device and partition alignment
+allow it. Otherwise, it zero-fills every logical block in the partition so an
+erase-group rounding operation cannot overwrite an adjacent GPT partition.
 
 The installed stock U-Boot environment is equivalent to:
 

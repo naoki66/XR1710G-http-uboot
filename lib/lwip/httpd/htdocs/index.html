@@ -227,7 +227,7 @@ button:disabled{opacity:.6;cursor:default}
     <p class="eyebrow">SBE1V1K Recovery</p>
     <h1>Upload firmware or chainloader</h1>
     <p class="lead">Recovery endpoint: <strong>192.168.255.1</strong></p>
-    <p class="note">`firmware` writes eMMC `kernel`, `rootfs`, and clears `rootfs_data`; `uboot` writes a raw chainloader FIT to `chainloader`.</p>
+    <p class="note">`firmware` fully erases eMMC `kernel`, `rootfs`, and `rootfs_data` before writing; `uboot` fully erases `chainloader` before writing its raw FIT.</p>
 
     <div class="targets">
       <div class="target active" id="card-firmware">
@@ -417,8 +417,6 @@ async function pollStatus(epoch) {
 
       if (phase === 1) {
         pct = data.erase_total ? Math.round(data.erase_done * 100 / data.erase_total) : 0;
-        detail = " (" + Math.round((data.erase_done || 0) / 1024) + "KB/" +
-                 Math.round((data.erase_total || 0) / 1024) + "KB)";
       } else if (phase === 2) {
         pct = data.write_total ? Math.round(data.write_done * 100 / data.write_total) : 0;
         detail = " (" + Math.round((data.write_done || 0) / 1024) + "KB/" +

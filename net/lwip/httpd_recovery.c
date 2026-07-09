@@ -13,6 +13,7 @@
 #include <malloc.h>
 #include <memalign.h>
 #include <command.h>
+#include <mmc.h>
 #include <mtd.h>
 #include <net-lwip.h>
 #include <net.h>
@@ -52,6 +53,7 @@
 #include <mtd/ubi-user.h>
 #include <timer.h>
 #include <asm/io.h>
+#include <asm/unaligned.h>
 #include "../../drivers/mtd/ubi/ubi.h"
 #include <stdarg.h>
 
@@ -97,8 +99,14 @@ static bool recovery_board_is_sbe1v1k(void)
 #define RECOVERY_MAX_UBOOT_SIZE    (1 * 1024 * 1024UL)
 #define RECOVERY_MAX_UBOOT_SIZE_MMC (4 * 1024 * 1024UL)
 #define RECOVERY_KERNEL_PAD_SIZE    (7000 * 1024UL)
-#define RECOVERY_ROOTFS_DATA_CLEAR  (4 * 1024 * 1024UL)
 #define RECOVERY_MMC_WRITE_CHUNK    (1024 * 1024UL)
+#define RECOVERY_MMC_ERASE_CHUNK    (32 * 1024 * 1024ULL)
+#define RECOVERY_MMC_ERASE_PROGRESS_STEPS 1000U
+#define RECOVERY_SQUASHFS_MAGIC      0x73717368U
+#define RECOVERY_SQUASHFS_MAJOR      4U
+#define RECOVERY_SQUASHFS_MAJOR_OFF  28U
+#define RECOVERY_SQUASHFS_BYTES_OFF  40U
+#define RECOVERY_SQUASHFS_HEADER_MIN 48U
 #define RECOVERY_REPARTITION_MAX    64UL
 #define RECOVERY_SBE1V1K_GPT_MAX    12288UL
 #define RECOVERY_SBE1V1K_CHAINLOADER_START 110626ULL
@@ -1751,6 +1759,51 @@ recovery_validate_sbe1v1k_kernel_fit(const struct recovery_image_part *kernel)
 	return 0;
 }
 
+static int
+recovery_validate_sbe1v1k_rootfs(const struct recovery_image_part *rootfs)
+{
+	const u8 *data = rootfs->data;
+	u64 bytes_used;
+
+	if (rootfs->size < RECOVERY_SQUASHFS_HEADER_MIN ||
+	    get_unaligned_le32(data) != RECOVERY_SQUASHFS_MAGIC ||
+	    get_unaligned_le16(data + RECOVERY_SQUASHFS_MAJOR_OFF) !=
+					      RECOVERY_SQUASHFS_MAJOR) {
+		printf("SBE1V1K rootfs payload must be a SquashFS v4 image\n");
+		return -ENOEXEC;
+	}
+
+	bytes_used = get_unaligned_le64(data + RECOVERY_SQUASHFS_BYTES_OFF);
+	if (!bytes_used || bytes_used > rootfs->size) {
+		printf("SBE1V1K SquashFS payload is truncated or invalid\n");
+		return -EINVAL;
+	}
+
+	printf("SBE1V1K SquashFS validation passed\n");
+	return 0;
+}
+
+static int recovery_mmc_check_part_size(const char *spec, size_t size)
+{
+	struct disk_partition part;
+	struct blk_desc *desc;
+	unsigned long long capacity;
+	int ret;
+
+	ret = recovery_get_mmc_part(spec, &desc, &part);
+	if (ret)
+		return ret;
+
+	capacity = recovery_mmc_part_bytes(&part);
+	if (size > capacity) {
+		printf("Image size %lu exceeds eMMC partition '%s' size %llu\n",
+		       (ulong)size, spec, capacity);
+		return -EFBIG;
+	}
+
+	return 0;
+}
+
 static int recovery_mmc_write_part(const char *spec,
 				   struct recovery_status_led_ctrl *status_leds,
 				   const void *data, size_t size,
@@ -1816,34 +1869,40 @@ static int recovery_mmc_write_part(const char *spec,
 	return 0;
 }
 
-static int recovery_mmc_clear_part(const char *spec,
-				   struct recovery_status_led_ctrl *status_leds,
-				   size_t clear_size)
+static void
+recovery_mmc_update_erase_progress(struct recovery_status_led_ctrl *status_leds,
+				   u32 progress_base, lbaint_t done,
+				   lbaint_t total)
 {
-	struct disk_partition part;
-	struct blk_desc *desc;
-	unsigned long long capacity;
-	ulong blksz, chunk_size;
+	unsigned long long steps;
+
+	if (!total)
+		steps = RECOVERY_MMC_ERASE_PROGRESS_STEPS;
+	else
+		steps = (unsigned long long)done *
+			RECOVERY_MMC_ERASE_PROGRESS_STEPS / total;
+	if (steps > RECOVERY_MMC_ERASE_PROGRESS_STEPS)
+		steps = RECOVERY_MMC_ERASE_PROGRESS_STEPS;
+
+	prog_erase_done = progress_base + steps;
+	prog_done = prog_erase_done + prog_write_done;
+	recovery_service_runtime(status_leds);
+}
+
+static int recovery_mmc_zero_part(const char *spec,
+				  struct recovery_status_led_ctrl *status_leds,
+				  struct blk_desc *desc,
+				  const struct disk_partition *part,
+				  u32 progress_base)
+{
+	ulong blksz = part->blksz ?: desc->blksz;
+	ulong chunk_size = ALIGN(RECOVERY_MMC_WRITE_CHUNK, blksz);
+	lbaint_t chunk_blocks, cleared = 0;
 	u8 *chunk_buf;
-	size_t cleared = 0;
-	int ret;
 
-	if (!spec || !*spec || !clear_size)
-		return 0;
-
-	ret = recovery_get_mmc_part(spec, &desc, &part);
-	if (ret)
-		return ret;
-
-	blksz = part.blksz ?: desc->blksz;
-	capacity = recovery_mmc_part_bytes(&part);
-	if (clear_size > capacity)
-		clear_size = capacity;
-
-	clear_size = ALIGN(clear_size, blksz);
-	chunk_size = ALIGN(RECOVERY_MMC_WRITE_CHUNK, blksz);
 	if (chunk_size < blksz)
 		chunk_size = blksz;
+	chunk_blocks = chunk_size / blksz;
 
 	chunk_buf = memalign(ARCH_DMA_MINALIGN, chunk_size);
 	if (!chunk_buf)
@@ -1851,27 +1910,107 @@ static int recovery_mmc_clear_part(const char *spec,
 
 	memset(chunk_buf, 0, chunk_size);
 
-	while (cleared < clear_size) {
-		size_t todo = clear_size - cleared;
-		lbaint_t blk, blkcnt;
+	while (cleared < part->size) {
+		lbaint_t todo = part->size - cleared;
+		lbaint_t blk = part->start + cleared;
 
-		if (todo > chunk_size)
-			todo = chunk_size;
+		if (todo > chunk_blocks)
+			todo = chunk_blocks;
 
-		blk = part.start + cleared / blksz;
-		blkcnt = todo / blksz;
-		if (blk_dwrite(desc, blk, blkcnt, chunk_buf) != blkcnt) {
-			printf("eMMC clear failed at partition '%s' block " LBAF "\n",
-			       spec, blk);
+		if (blk_dwrite(desc, blk, todo, chunk_buf) != todo) {
+			printf("eMMC zero-fill failed at partition '%s' block "
+			       LBAF "\n", spec, blk);
 			free(chunk_buf);
 			return -EIO;
 		}
 
 		cleared += todo;
-		recovery_service_runtime(status_leds);
+		recovery_mmc_update_erase_progress(status_leds, progress_base,
+						   cleared, part->size);
 	}
 
 	free(chunk_buf);
+	return 0;
+}
+
+static int recovery_mmc_erase_part(const char *spec,
+				   struct recovery_status_led_ctrl *status_leds,
+				   u32 progress_base)
+{
+	struct disk_partition part;
+	struct blk_desc *desc;
+	struct mmc *mmc;
+	unsigned long long capacity;
+	lbaint_t chunk_blocks, erased = 0;
+	u32 erase_group;
+	ulong blksz;
+	bool exact;
+	int ret;
+
+	if (!spec || !*spec)
+		return -EINVAL;
+
+	ret = recovery_get_mmc_part(spec, &desc, &part);
+	if (ret)
+		return ret;
+
+	blksz = part.blksz ?: desc->blksz;
+	capacity = recovery_mmc_part_bytes(&part);
+	mmc = find_mmc_device(desc->devnum);
+	if (!mmc) {
+		printf("Cannot find eMMC device %d for partition '%s'\n",
+		       desc->devnum, spec);
+		return -ENODEV;
+	}
+
+	erase_group = mmc->erase_grp_size;
+	exact = erase_group &&
+		(mmc->can_trim || (!(part.start % erase_group) &&
+				   !(part.size % erase_group)));
+
+	printf("Erasing entire eMMC partition '%s' (%llu blocks, %llu bytes)...\n",
+	       spec, (unsigned long long)part.size, capacity);
+
+	if (!exact) {
+		printf("eMMC partition '%s' is not erase-group aligned and exact trim is unavailable; zero-filling the complete partition to protect adjacent GPT partitions\n",
+		       spec);
+		return recovery_mmc_zero_part(spec, status_leds, desc, &part,
+					      progress_base);
+	}
+
+	chunk_blocks = RECOVERY_MMC_ERASE_CHUNK / blksz;
+	if (!chunk_blocks)
+		chunk_blocks = 1;
+	if (!mmc->can_trim && chunk_blocks < erase_group)
+		chunk_blocks = erase_group;
+	if (!mmc->can_trim)
+		chunk_blocks -= chunk_blocks % erase_group;
+
+	while (erased < part.size) {
+		lbaint_t todo = part.size - erased;
+		lbaint_t blk = part.start + erased;
+
+		if (todo > chunk_blocks)
+			todo = chunk_blocks;
+		if (!mmc->can_trim && todo % erase_group)
+			todo -= todo % erase_group;
+		if (!todo) {
+			printf("Cannot safely align eMMC erase for partition '%s'\n",
+			       spec);
+			return -EINVAL;
+		}
+
+		if (blk_derase(desc, blk, todo) != todo) {
+			printf("eMMC erase failed at partition '%s' block " LBAF
+			       " count " LBAF "\n", spec, blk, todo);
+			return -EIO;
+		}
+
+		erased += todo;
+		recovery_mmc_update_erase_progress(status_leds, progress_base,
+						   erased, part.size);
+	}
+
 	return 0;
 }
 
@@ -2571,6 +2710,7 @@ static int recovery_repartition_factory(struct recovery_status_led_ctrl *status_
 	const void *chainloader_fit;
 	size_t chainloader_size;
 	char *repartition_gpt;
+	u32 erase_progress_base;
 	int ret;
 
 	if (recv_off != strlen(RECOVERY_SBE1V1K_REPARTITION_TOKEN) ||
@@ -2601,6 +2741,8 @@ static int recovery_repartition_factory(struct recovery_status_led_ctrl *status_
 	printf("Factory GPT verified. Writing OpenWrt GPT layout...\n");
 	prog_phase = 2;
 	prog_erase_done = prog_erase_total;
+	erase_progress_base = prog_erase_total;
+	prog_erase_total += RECOVERY_MMC_ERASE_PROGRESS_STEPS;
 	prog_write_done = 0;
 	prog_write_total = 2 + chainloader_size + RECOVERY_APPSBLENV_SIZE;
 	prog_total = prog_erase_total + prog_write_total;
@@ -2643,6 +2785,13 @@ static int recovery_repartition_factory(struct recovery_status_led_ctrl *status_
 	prog_done = prog_erase_done + prog_write_done;
 	recovery_service_runtime(status_leds);
 
+	prog_phase = 1;
+	ret = recovery_mmc_erase_part(RECOVERY_SBE1V1K_CHAINLOADER_PART,
+				      status_leds, erase_progress_base);
+	if (ret)
+		return ret;
+	prog_phase = 2;
+
 	printf("Writing running chainloader FIT to '%s'...\n",
 	       RECOVERY_SBE1V1K_CHAINLOADER_PART);
 	ret = recovery_mmc_write_part(RECOVERY_SBE1V1K_CHAINLOADER_PART,
@@ -2670,7 +2819,6 @@ static int recovery_flash_mmc_firmware(struct recovery_status_led_ctrl *status_l
 	const char *rootfs_part = env_get("recovery_part_rootfs") ?: "0#rootfs";
 	const char *data_part = env_get("recovery_part_data") ?: "0#rootfs_data";
 	struct recovery_firmware_image image;
-	size_t clear_size;
 	int ret;
 
 	ret = recovery_extract_firmware(recv_base, recv_off, &image);
@@ -2681,15 +2829,44 @@ static int recovery_flash_mmc_firmware(struct recovery_status_led_ctrl *status_l
 		ret = recovery_validate_sbe1v1k_kernel_fit(&image.kernel);
 		if (ret)
 			return ret;
+		ret = recovery_validate_sbe1v1k_rootfs(&image.rootfs);
+		if (ret)
+			return ret;
 	}
 
-	prog_phase = 2;
+	ret = recovery_mmc_check_part_size(kernel_part, image.kernel.size);
+	if (ret)
+		return ret;
+	ret = recovery_mmc_check_part_size(rootfs_part, image.rootfs.size);
+	if (ret)
+		return ret;
+	ret = recovery_mmc_check_part_size(data_part, 0);
+	if (ret)
+		return ret;
+
+	prog_phase = 1;
 	prog_done = 0;
 	prog_erase_done = 0;
-	prog_erase_total = 0;
+	prog_erase_total = 3 * RECOVERY_MMC_ERASE_PROGRESS_STEPS;
 	prog_write_done = 0;
 	prog_write_total = image.kernel.size + image.rootfs.size;
-	prog_total = prog_write_total;
+	prog_total = prog_erase_total + prog_write_total;
+
+	ret = recovery_mmc_erase_part(kernel_part, status_leds, 0);
+	if (ret)
+		return ret;
+
+	ret = recovery_mmc_erase_part(rootfs_part, status_leds,
+				      RECOVERY_MMC_ERASE_PROGRESS_STEPS);
+	if (ret)
+		return ret;
+
+	ret = recovery_mmc_erase_part(data_part, status_leds,
+				      2 * RECOVERY_MMC_ERASE_PROGRESS_STEPS);
+	if (ret)
+		return ret;
+
+	prog_phase = 2;
 
 	printf("Writing kernel payload to eMMC partition '%s'...\n",
 	       kernel_part);
@@ -2706,16 +2883,6 @@ static int recovery_flash_mmc_firmware(struct recovery_status_led_ctrl *status_l
 	if (ret)
 		return ret;
 
-	clear_size = env_get_hex("recovery_data_clear",
-				 RECOVERY_ROOTFS_DATA_CLEAR);
-	if (clear_size) {
-		printf("Clearing %lu bytes of eMMC data partition '%s'...\n",
-		       (ulong)clear_size, data_part);
-		ret = recovery_mmc_clear_part(data_part, status_leds, clear_size);
-		if (ret)
-			return ret;
-	}
-
 	return 0;
 }
 
@@ -2724,6 +2891,7 @@ static int recovery_flash_mmc_uboot(struct recovery_status_led_ctrl *status_leds
 	const char *uboot_part = env_get("recovery_part_uboot");
 	const char *uboot_alt_part = env_get("recovery_part_uboot_alt");
 	unsigned long max = recovery_uboot_limit();
+	u32 target_count;
 	int ret;
 
 	if (!uboot_part || !*uboot_part) {
@@ -2750,13 +2918,36 @@ static int recovery_flash_mmc_uboot(struct recovery_status_led_ctrl *status_leds
 		return -ENOEXEC;
 	}
 
-	prog_phase = 2;
+	ret = recovery_mmc_check_part_size(uboot_part, recv_off);
+	if (ret)
+		return ret;
+	if (uboot_alt_part && *uboot_alt_part) {
+		ret = recovery_mmc_check_part_size(uboot_alt_part, recv_off);
+		if (ret)
+			return ret;
+	}
+
+	target_count = uboot_alt_part && *uboot_alt_part ? 2 : 1;
+	prog_phase = 1;
 	prog_done = 0;
 	prog_erase_done = 0;
-	prog_erase_total = 0;
+	prog_erase_total = target_count * RECOVERY_MMC_ERASE_PROGRESS_STEPS;
 	prog_write_done = 0;
-	prog_write_total = recv_off;
-	prog_total = prog_write_total;
+	prog_write_total = recv_off * target_count;
+	prog_total = prog_erase_total + prog_write_total;
+
+	ret = recovery_mmc_erase_part(uboot_part, status_leds, 0);
+	if (ret)
+		return ret;
+
+	if (uboot_alt_part && *uboot_alt_part) {
+		ret = recovery_mmc_erase_part(uboot_alt_part, status_leds,
+					      RECOVERY_MMC_ERASE_PROGRESS_STEPS);
+		if (ret)
+			return ret;
+	}
+
+	prog_phase = 2;
 
 	printf("Writing chainloader FIT to eMMC partition '%s'...\n",
 	       uboot_part);
@@ -2769,7 +2960,7 @@ static int recovery_flash_mmc_uboot(struct recovery_status_led_ctrl *status_leds
 		printf("Writing chainloader FIT to alternate eMMC partition '%s'...\n",
 		       uboot_alt_part);
 		ret = recovery_mmc_write_part(uboot_alt_part, status_leds,
-					      recv_base, recv_off, 0);
+					      recv_base, recv_off, recv_off);
 		if (ret)
 			return ret;
 	}
