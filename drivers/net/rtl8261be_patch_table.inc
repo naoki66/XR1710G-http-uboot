@@ -5,7 +5,7 @@
  */
 //Date: Fri Aug 18 14:15:49 2023
 
-rtk_hwpatch_t rtl8261n_c_top_conf[17] = {
+static const rtk_hwpatch_t rtl8261n_c_top_conf[17] = {
     {RTK_PATCH_OP_TOP     , 0xf  , 2     , 20    , 15, 0 , 0x5   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_TOP     , 0xf  , 2     , 21    , 15, 0 , 0x0   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_TOP     , 0xf  , 2     , 22    , 15, 0 , 0x280 , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
@@ -25,7 +25,7 @@ rtk_hwpatch_t rtl8261n_c_top_conf[17] = {
     {RTK_PATCH_OP_TOP     , 0xf  , 90    , 20    , 15, 8 , 0x01  , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_sds_conf[103] = {
+static const rtk_hwpatch_t rtl8261n_c_sds_conf[103] = {
     {RTK_PATCH_OP_TOP     , 0xf  , 24    , 18    , 15, 0 , 0x881F, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_TOP     , 0xf  , 24    , 19    , 15, 0 , 0x003F, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_TOP     , 0xf  , 24    , 20    , 15, 0 , 0x003F, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
@@ -131,12 +131,12 @@ rtk_hwpatch_t rtl8261n_c_sds_conf[103] = {
     {RTK_PATCH_OP_TOP     , 0xf  , 90    , 20    , 7 , 0 , 0x01  , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_afe_conf[2] = {
+static const rtk_hwpatch_t rtl8261n_c_afe_conf[2] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xbf1a, 3 , 2 , 0x0   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_TOP     , 0xf  , 90    , 21    , 15, 8 , 0x01  , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_uc_conf[10] = {
+static const rtk_hwpatch_t rtl8261n_c_uc_conf[10] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x0   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xbd8a, 5 , 3 , 0x3   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xbd8c, 6 , 4 , 0x5   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
@@ -149,7 +149,7 @@ rtk_hwpatch_t rtl8261n_c_uc_conf[10] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa438, 15, 8 , 0x3D  , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_uc2_conf[282] = {
+static const rtk_hwpatch_t rtl8261n_c_uc2_conf[282] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x1   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa436, 15, 0 , 0xb87c, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa438, 15, 0 , 0x8af6, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
@@ -434,7 +434,7 @@ rtk_hwpatch_t rtl8261n_c_uc2_conf[282] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x0   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_nctl0_conf[60] = {
+static const rtk_hwpatch_t rtl8261n_c_nctl0_conf[60] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x1   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa436, 15, 0 , 0xA016, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa438, 15, 0 , 0x0000, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
@@ -497,7 +497,7 @@ rtk_hwpatch_t rtl8261n_c_nctl0_conf[60] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x0   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_nctl1_conf[72] = {
+static const rtk_hwpatch_t rtl8261n_c_nctl1_conf[72] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x1   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa436, 15, 0 , 0xA016, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa438, 15, 0 , 0x0010, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
@@ -572,7 +572,7 @@ rtk_hwpatch_t rtl8261n_c_nctl1_conf[72] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x0   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_nctl2_conf[878] = {
+static const rtk_hwpatch_t rtl8261n_c_nctl2_conf[878] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x1   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa436, 15, 0 , 0xA016, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa438, 15, 0 , 0x0020, RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
@@ -1453,7 +1453,7 @@ rtk_hwpatch_t rtl8261n_c_nctl2_conf[878] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x0   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_algxg_conf[80] = {
+static const rtk_hwpatch_t rtl8261n_c_algxg_conf[80] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb87c, 15, 0 , 0x8165, RTK_PATCH_CMP_W   , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb87e, 15, 8 , 0x22  , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb87c, 15, 0 , 0x8167, RTK_PATCH_CMP_W   , 0, 0, 0, 0},
@@ -1536,7 +1536,7 @@ rtk_hwpatch_t rtl8261n_c_algxg_conf[80] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb87e, 15, 8 , 0x73  , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_alg_giga_conf[5] = {
+static const rtk_hwpatch_t rtl8261n_c_alg_giga_conf[5] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa836, 15, 15, 0x1   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa85c, 7 , 7 , 0x1   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa85c, 6 , 3 , 0x0   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
@@ -1544,7 +1544,7 @@ rtk_hwpatch_t rtl8261n_c_alg_giga_conf[5] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa438, 15, 8 , 0x5d  , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_normal_conf[21] = {
+static const rtk_hwpatch_t rtl8261n_c_normal_conf[21] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa436, 15, 0 , 0x817d, RTK_PATCH_CMP_W   , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa438, 15, 8 , 0x07  , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb516, 6 , 0 , 0x0   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
@@ -1568,7 +1568,7 @@ rtk_hwpatch_t rtl8261n_c_normal_conf[21] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa438, 15, 0 , 0x0011, RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_dataram_conf[148] = {
+static const rtk_hwpatch_t rtl8261n_c_dataram_conf[148] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb820, 7 , 7 , 0x0   , RTK_PATCH_CMP_WS  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb896, 0 , 0 , 0x0   , RTK_PATCH_CMP_W   , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb892, 15, 8 , 0x0   , RTK_PATCH_CMP_W   , 0, 0, 0, 0},
@@ -1719,7 +1719,7 @@ rtk_hwpatch_t rtl8261n_c_dataram_conf[148] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xb896, 0 , 0 , 0x1   , RTK_PATCH_CMP_W   , 0, 0, 0, 0},
 };
 
-rtk_hwpatch_t rtl8261n_c_rtct_conf[176] = {
+static const rtk_hwpatch_t rtl8261n_c_rtct_conf[176] = {
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa468, 1 , 0 , 0x1   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xa422, 0 , 0 , 0x0   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},
     {RTK_PATCH_OP_PHYOCP  , 0xf  , 0     , 0xc010, 9 , 9 , 0x1   , RTK_PATCH_CMP_WC  , 0, 0, 0, 0},

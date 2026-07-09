@@ -396,6 +396,583 @@ static int rtl8211f_startup(struct phy_device *phydev)
 	return rtl8211f_parse_status(phydev);
 }
 
+#define RTL8261BE_PHY_ID		0x001ccaf3
+#define RTL8261BE_PHY_ID_MASK		0xffffffff
+#define RTL8261BE_CHIP_ID_REG		0x0104
+#define RTL8261BE_CHIP_ID_MASK		0xffc0
+#define RTL8261BE_CHIP_ID		0x1140
+#define RTL8261BE_EXT_RESET		0x0145
+#define RTL8261BE_SDS_CMD		0x0143
+#define RTL8261BE_SDS_BUSY		BIT(15)
+#define RTL8261BE_SDS_CMD_READ(page, reg) \
+	(0x8000 | (((page) & 0x3f) | (((reg) & 0x1f) << 6)))
+#define RTL8261BE_SDS_CMD_WRITE(page, reg) \
+	(0x8800 | (((page) & 0x3f) | (((reg) & 0x1f) << 6)))
+#define RTL8261BE_SDS_USXGMII		0x88c6
+#define RTL8261BE_SPEED_STATUS		0xa434
+#define RTL8261BE_SPEED_MASK		0x0630
+#define RTL8261BE_SPEED_10		0x0000
+#define RTL8261BE_SPEED_100		0x0010
+#define RTL8261BE_SPEED_1000		0x0020
+#define RTL8261BE_SPEED_2500		0x0210
+#define RTL8261BE_SPEED_5000		0x0220
+#define RTL8261BE_SPEED_10000		0x0200
+#define RTL8261BE_LINK_SPEED_5000	5000
+#define RTL8261BE_SERDES_GLOBAL_CFG	0x00c1
+#define RTL8261BE_SERDES_TX_INV		BIT(7)
+#define RTL8261BE_SERDES_RX_INV		BIT(6)
+#define RTL8261BE_SERDES_OP_CTRL	0x7587
+#define RTL8261BE_SERDES_OP_ADDR	0x7588
+#define RTL8261BE_SERDES_OP_DATA	0x7589
+#define RTL8261BE_PMA_AN_DISABLE	BIT(11)
+
+#define RTK_PATCH_CMP_W			0
+#define RTK_PATCH_CMP_WC		1
+#define RTK_PATCH_CMP_SWC		2
+#define RTK_PATCH_CMP_WS		3
+
+#define RTK_PATCH_OP_PHY		0
+#define RTK_PATCH_OP_PHYOCP		1
+#define RTK_PATCH_OP_TOP		2
+#define RTK_PATCH_OP_TOPOCP		3
+#define RTK_PATCH_OP_PSDS0		4
+#define RTK_PATCH_OP_PSDS1		5
+#define RTK_PATCH_OP_MSDS		6
+#define RTK_PATCH_OP_MAC		7
+#define RTK_PATCH_OP_DELAY_MS		200
+
+typedef struct rtk_hwpatch_s {
+	u8 patch_op;
+	u8 portmask;
+	u16 pagemmd;
+	u16 addr;
+	u8 msb;
+	u8 lsb;
+	u16 data;
+	u8 compare_op;
+	u16 sram_p;
+	u16 sram_rr;
+	u16 sram_rw;
+	u16 sram_a;
+} rtk_hwpatch_t;
+
+#include "../rtl8261be_patch_table.inc"
+
+static u16 rtl8261be_field_set(u16 orig, u8 msb, u8 lsb, u16 data)
+{
+	u16 mask = GENMASK(msb, lsb);
+
+	return (orig & ~mask) | ((data << __builtin_ctz(mask)) & mask);
+}
+
+static u16 rtl8261be_phy_reg(u16 page, u16 addr)
+{
+	if (addr < 16)
+		return 0xa400 + page * 2;
+	if (addr < 24)
+		return 16 * page + (addr - 16) * 2;
+
+	return 0xa430 + (addr - 24) * 2;
+}
+
+static int rtl8261be_top_read(struct phy_device *phydev, u16 page, u16 reg)
+{
+	u16 addr = page * 8 + reg - 16;
+
+	return phy_read(phydev, MDIO_MMD_VEND1, addr);
+}
+
+static int rtl8261be_top_write(struct phy_device *phydev, u16 page, u16 reg,
+			       u16 value)
+{
+	u16 addr = page * 8 + reg - 16;
+
+	return phy_write(phydev, MDIO_MMD_VEND1, addr, value);
+}
+
+static int rtl8261be_sds_wait(struct phy_device *phydev)
+{
+	int i, value;
+
+	for (i = 0; i < 10; i++) {
+		value = phy_read(phydev, MDIO_MMD_VEND1, RTL8261BE_SDS_CMD);
+		if (value < 0)
+			return value;
+		if (!(value & RTL8261BE_SDS_BUSY))
+			return 0;
+		udelay(10);
+	}
+
+	return -ETIMEDOUT;
+}
+
+static int rtl8261be_sds_read(struct phy_device *phydev, u16 page, u16 reg)
+{
+	int ret;
+
+	ret = rtl8261be_top_write(phydev, 40, 19,
+				  RTL8261BE_SDS_CMD_READ(page, reg));
+	if (ret)
+		return ret;
+
+	ret = rtl8261be_sds_wait(phydev);
+	if (ret)
+		return ret;
+
+	return rtl8261be_top_read(phydev, 40, 18);
+}
+
+static int rtl8261be_sds_write(struct phy_device *phydev, u16 page, u16 reg,
+			       u16 value)
+{
+	int ret;
+
+	ret = rtl8261be_top_write(phydev, 40, 17, value);
+	if (ret)
+		return ret;
+
+	ret = rtl8261be_top_write(phydev, 40, 19,
+				  RTL8261BE_SDS_CMD_WRITE(page, reg));
+	if (ret)
+		return ret;
+
+	return rtl8261be_sds_wait(phydev);
+}
+
+static int rtl8261be_wait(struct phy_device *phydev, int devad, u16 reg,
+			  u16 data, u16 mask, bool equal)
+{
+	int i, value;
+
+	for (i = 0; i < 1000; i++) {
+		value = phy_read(phydev, devad, reg);
+		if (value < 0)
+			return value;
+		if (equal ? (value & mask) == data : (value & mask) != data)
+			return 0;
+		mdelay(1);
+	}
+
+	return -ETIMEDOUT;
+}
+
+static int rtl8261be_modify(struct phy_device *phydev, int devad, u16 reg,
+			    u16 mask, u16 value)
+{
+	int old;
+
+	old = phy_read(phydev, devad, reg);
+	if (old < 0)
+		return old;
+
+	return phy_write(phydev, devad, reg,
+			 (old & ~mask) | (value & mask));
+}
+
+static int rtl8261be_phy_modify(struct phy_device *phydev, u16 page, u16 addr,
+				u8 msb, u8 lsb, u16 data)
+{
+	u16 reg = rtl8261be_phy_reg(page, addr);
+	u16 mask = GENMASK(msb, lsb);
+
+	return rtl8261be_modify(phydev, MDIO_MMD_VEND2, reg, mask,
+			       data << __builtin_ctz(mask));
+}
+
+static int rtl8261be_apply_patch(struct phy_device *phydev,
+				 const rtk_hwpatch_t *patch)
+{
+	int current;
+	u16 value;
+
+	if (!(patch->portmask & BIT(0)))
+		return 0;
+
+	switch (patch->patch_op) {
+	case RTK_PATCH_OP_TOP:
+		if (patch->msb == 15 && patch->lsb == 0)
+			return rtl8261be_top_write(phydev, patch->pagemmd,
+						     patch->addr, patch->data);
+		current = rtl8261be_top_read(phydev, patch->pagemmd,
+					     patch->addr);
+		if (current < 0)
+			return current;
+		value = rtl8261be_field_set(current, patch->msb, patch->lsb,
+					    patch->data);
+		return rtl8261be_top_write(phydev, patch->pagemmd, patch->addr,
+					     value);
+	case RTK_PATCH_OP_PSDS0:
+		if (patch->msb == 15 && patch->lsb == 0)
+			return rtl8261be_sds_write(phydev, patch->pagemmd,
+						     patch->addr, patch->data);
+		current = rtl8261be_sds_read(phydev, patch->pagemmd,
+					     patch->addr);
+		if (current < 0)
+			return current;
+		value = rtl8261be_field_set(current, patch->msb, patch->lsb,
+					    patch->data);
+		return rtl8261be_sds_write(phydev, patch->pagemmd, patch->addr,
+					     value);
+	case RTK_PATCH_OP_PHYOCP:
+		if (patch->msb == 15 && patch->lsb == 0)
+			return phy_write(phydev, MDIO_MMD_VEND2, patch->addr,
+					 patch->data);
+		current = phy_read(phydev, MDIO_MMD_VEND2, patch->addr);
+		if (current < 0)
+			return current;
+		value = rtl8261be_field_set(current, patch->msb, patch->lsb,
+					    patch->data);
+		return phy_write(phydev, MDIO_MMD_VEND2, patch->addr, value);
+	case RTK_PATCH_OP_DELAY_MS:
+		mdelay(patch->data);
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int rtl8261be_run_table(struct phy_device *phydev,
+			       const rtk_hwpatch_t *table, size_t count)
+{
+	size_t i;
+	int ret;
+
+	for (i = 0; i < count; i++) {
+		ret = rtl8261be_apply_patch(phydev, &table[i]);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int rtl8261be_flow_r1(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = rtl8261be_phy_modify(phydev, 0xb82, 16, 4, 4, 1);
+	if (ret)
+		return ret;
+	ret = rtl8261be_phy_modify(phydev, 0xb82, 16, 4, 4, 1);
+	if (ret)
+		return ret;
+	ret = rtl8261be_wait(phydev, MDIO_MMD_VEND2,
+			     rtl8261be_phy_reg(0xb80, 16), BIT(6), BIT(6),
+			       true);
+	if (ret)
+		return ret;
+	ret = phy_write(phydev, MDIO_MMD_VEND2,
+			rtl8261be_phy_reg(0xa43, 27), 0x8023);
+	if (ret)
+		return ret;
+	ret = phy_write(phydev, MDIO_MMD_VEND2,
+			rtl8261be_phy_reg(0xa43, 28), 0x3802);
+	if (ret)
+		return ret;
+	ret = phy_write(phydev, MDIO_MMD_VEND2,
+			rtl8261be_phy_reg(0xa43, 27), 0xb82e);
+	if (ret)
+		return ret;
+
+	return phy_write(phydev, MDIO_MMD_VEND2,
+			 rtl8261be_phy_reg(0xa43, 28), 0x0001);
+}
+
+static int rtl8261be_flow_r2(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = phy_write(phydev, MDIO_MMD_VEND2,
+			rtl8261be_phy_reg(0xa43, 27), 0);
+	if (ret)
+		return ret;
+	ret = phy_write(phydev, MDIO_MMD_VEND2,
+			rtl8261be_phy_reg(0xa43, 28), 0);
+	if (ret)
+		return ret;
+	ret = rtl8261be_phy_modify(phydev, 0xb82, 23, 0, 0, 0);
+	if (ret)
+		return ret;
+	ret = phy_write(phydev, MDIO_MMD_VEND2,
+			rtl8261be_phy_reg(0xa43, 27), 0x8023);
+	if (ret)
+		return ret;
+	ret = phy_write(phydev, MDIO_MMD_VEND2,
+			rtl8261be_phy_reg(0xa43, 28), 0);
+	if (ret)
+		return ret;
+	ret = rtl8261be_phy_modify(phydev, 0xb82, 16, 4, 4, 0);
+	if (ret)
+		return ret;
+
+	return rtl8261be_wait(phydev, MDIO_MMD_VEND2,
+			     rtl8261be_phy_reg(0xb80, 16), BIT(6), BIT(6),
+			     false);
+}
+
+static int rtl8261be_flow_l1(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = rtl8261be_phy_modify(phydev, 0xa4a, 16, 10, 10, 1);
+	if (ret)
+		return ret;
+	ret = rtl8261be_phy_modify(phydev, 0xa4a, 16, 10, 10, 1);
+	if (ret)
+		return ret;
+
+	return rtl8261be_wait(phydev, MDIO_MMD_VEND2,
+			     rtl8261be_phy_reg(0xa60, 16), 1, 0xff, true);
+}
+
+static int rtl8261be_flow_l2(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = rtl8261be_phy_modify(phydev, 0xa4a, 16, 10, 10, 0);
+	if (ret)
+		return ret;
+
+	return rtl8261be_wait(phydev, MDIO_MMD_VEND2,
+			     rtl8261be_phy_reg(0xa60, 16), 1, 0xff, false);
+}
+
+#define RTL8261BE_RUN_TABLE(phydev, table) \
+	rtl8261be_run_table((phydev), (table), ARRAY_SIZE(table))
+
+static int rtl8261be_patch(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = rtl8261be_flow_r1(phydev);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_nctl0_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_nctl1_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_nctl2_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_uc2_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_uc_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_dataram_conf);
+	if (ret)
+		return ret;
+	ret = rtl8261be_flow_r2(phydev);
+	if (ret)
+		return ret;
+	ret = rtl8261be_flow_l1(phydev);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_algxg_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_alg_giga_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_normal_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_top_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_sds_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_afe_conf);
+	if (ret)
+		return ret;
+	ret = RTL8261BE_RUN_TABLE(phydev, rtl8261n_c_rtct_conf);
+	if (ret)
+		return ret;
+
+	return rtl8261be_flow_l2(phydev);
+}
+
+static int rtl8261be_apply_board_cfg(struct phy_device *phydev)
+{
+	u16 value = 0;
+	bool tx_swap, rx_swap;
+
+	tx_swap = ofnode_read_bool(phydev->node, "realtek,pnswap-tx");
+	rx_swap = ofnode_read_bool(phydev->node, "realtek,pnswap-rx");
+	if (!tx_swap && !rx_swap)
+		return 0;
+
+	if (tx_swap)
+		value |= RTL8261BE_SERDES_TX_INV;
+	if (rx_swap)
+		value |= RTL8261BE_SERDES_RX_INV;
+
+	return rtl8261be_modify(phydev, MDIO_MMD_VEND1,
+			       RTL8261BE_SERDES_GLOBAL_CFG,
+			       RTL8261BE_SERDES_TX_INV |
+			       RTL8261BE_SERDES_RX_INV, value);
+}
+
+static int rtl8261be_host_serdes_update(struct phy_device *phydev)
+{
+	static const u16 option_regs[] = {
+		0x6973, 0x6974, 0x6975, 0x6976, 0x6977,
+	};
+	int i, ret, value;
+
+	if (!ofnode_read_bool(phydev->node, "realtek,host-serdes-update"))
+		return 0;
+
+	ret = rtl8261be_modify(phydev, MDIO_MMD_VEND1, 0x0105, BIT(0), 0);
+	if (ret)
+		return ret;
+	ret = rtl8261be_modify(phydev, MDIO_MMD_VEND1, 0x00c2,
+			       GENMASK(9, 0), 0x000d);
+	if (ret)
+		return ret;
+	ret = rtl8261be_modify(phydev, MDIO_MMD_VEND1, 0x03f1,
+			       GENMASK(15, 0), 0x0072);
+	if (ret)
+		return ret;
+	ret = rtl8261be_modify(phydev, MDIO_MMD_VEND1, 0x02a2, BIT(7), 0);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < ARRAY_SIZE(option_regs); i++) {
+		value = phy_read(phydev, MDIO_MMD_VEND1, option_regs[i]);
+		if (value < 0)
+			return value;
+		value &= ~0x0f0f;
+		ret = phy_write(phydev, MDIO_MMD_VEND1, option_regs[i], value);
+		if (ret)
+			return ret;
+	}
+
+	ret = phy_write(phydev, MDIO_MMD_VEND1,
+			RTL8261BE_SERDES_OP_ADDR, 0x00f1);
+	if (ret)
+		return ret;
+	ret = phy_write(phydev, MDIO_MMD_VEND1,
+			RTL8261BE_SERDES_OP_DATA, 0x854f);
+	if (ret)
+		return ret;
+
+	return phy_write(phydev, MDIO_MMD_VEND1,
+			 RTL8261BE_SERDES_OP_CTRL, 0x0003);
+}
+
+static int rtl8261be_restart_aneg(struct phy_device *phydev)
+{
+	int control;
+
+	control = phy_read(phydev, MDIO_MMD_AN, MDIO_CTRL1);
+	if (control < 0)
+		return control;
+
+	control |= MDIO_AN_CTRL1_ENABLE | MDIO_AN_CTRL1_RESTART;
+
+	return phy_write(phydev, MDIO_MMD_AN, MDIO_CTRL1, control);
+}
+
+static int rtl8261be_config(struct phy_device *phydev)
+{
+	int chip_id, control, ret;
+
+	if (!phydev->is_c45)
+		return -ENODEV;
+
+	chip_id = phy_read(phydev, MDIO_MMD_VEND1, RTL8261BE_CHIP_ID_REG);
+	if (chip_id < 0)
+		return chip_id;
+	if ((chip_id & RTL8261BE_CHIP_ID_MASK) != RTL8261BE_CHIP_ID)
+		return -ENODEV;
+
+	ret = phy_write(phydev, MDIO_MMD_VEND1, RTL8261BE_EXT_RESET, 1);
+	if (ret)
+		return ret;
+	ret = phy_write(phydev, MDIO_MMD_VEND1, RTL8261BE_EXT_RESET, 0);
+	if (ret)
+		return ret;
+	mdelay(30);
+
+	ret = rtl8261be_patch(phydev);
+	if (ret)
+		return ret;
+	ret = rtl8261be_apply_board_cfg(phydev);
+	if (ret)
+		return ret;
+	ret = rtl8261be_sds_write(phydev, 6, 3, RTL8261BE_SDS_USXGMII);
+	if (ret)
+		return ret;
+	ret = rtl8261be_host_serdes_update(phydev);
+	if (ret)
+		return ret;
+
+	control = phy_read(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1);
+	if (control < 0)
+		return control;
+	ret = phy_write(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1,
+			control & ~RTL8261BE_PMA_AN_DISABLE);
+	if (ret)
+		return ret;
+
+	return rtl8261be_restart_aneg(phydev);
+}
+
+static int rtl8261be_startup(struct phy_device *phydev)
+{
+	int status, speed;
+
+	phy_read(phydev, MDIO_MMD_AN, MDIO_STAT1);
+	status = phy_read(phydev, MDIO_MMD_AN, MDIO_STAT1);
+	if (status < 0)
+		return status;
+
+	phydev->link = !!(status & MDIO_STAT1_LSTATUS);
+	phydev->speed = SPEED_10;
+	phydev->duplex = DUPLEX_HALF;
+	if (!phydev->link)
+		return 0;
+
+	speed = phy_read(phydev, MDIO_MMD_VEND2, RTL8261BE_SPEED_STATUS);
+	if (speed < 0)
+		return speed;
+
+	switch (speed & RTL8261BE_SPEED_MASK) {
+	case RTL8261BE_SPEED_10:
+		phydev->speed = SPEED_10;
+		break;
+	case RTL8261BE_SPEED_100:
+		phydev->speed = SPEED_100;
+		break;
+	case RTL8261BE_SPEED_1000:
+		phydev->speed = SPEED_1000;
+		break;
+	case RTL8261BE_SPEED_2500:
+		phydev->speed = SPEED_2500;
+		break;
+	case RTL8261BE_SPEED_5000:
+		phydev->speed = RTL8261BE_LINK_SPEED_5000;
+		break;
+	case RTL8261BE_SPEED_10000:
+		phydev->speed = SPEED_10000;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (phydev->speed >= SPEED_2500)
+		phydev->duplex = DUPLEX_FULL;
+	else
+		phydev->duplex = speed & BIT(3) ? DUPLEX_FULL : DUPLEX_HALF;
+
+	return 0;
+}
+
 /* Support for RTL8211B PHY */
 U_BOOT_PHY_DRIVER(rtl8211b) = {
 	.name = "RealTek RTL8211B",
@@ -469,4 +1046,16 @@ U_BOOT_PHY_DRIVER(rtl8201f) = {
 	.config = &rtl8201f_config,
 	.startup = &genphy_startup,
 	.shutdown = &genphy_shutdown,
+};
+
+U_BOOT_PHY_DRIVER(rtl8261be) = {
+	.name = "RealTek RTL8261BE",
+	.uid = RTL8261BE_PHY_ID,
+	.mask = RTL8261BE_PHY_ID_MASK,
+	.features = PHY_10G_FEATURES | SUPPORTED_2500baseX_Full,
+	.mmds = MDIO_DEVS_PMAPMD | MDIO_DEVS_PCS | MDIO_DEVS_PHYXS |
+		 MDIO_DEVS_AN | MDIO_DEVS_VEND1 | MDIO_DEVS_VEND2,
+	.config = &rtl8261be_config,
+	.startup = &rtl8261be_startup,
+	.shutdown = &gen10g_shutdown,
 };
