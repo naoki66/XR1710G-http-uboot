@@ -1430,6 +1430,8 @@ static bool recovery_is_rootfs_name(const char *name)
 static int recovery_fit_extract_firmware(const void *fit, size_t fit_size,
 					 struct recovery_firmware_image *image)
 {
+	bool has_kernel = false;
+	size_t boot_fit_size;
 	int images, node, ret;
 
 	memset(image, 0, sizeof(*image));
@@ -1459,12 +1461,11 @@ static int recovery_fit_extract_firmware(const void *fit, size_t fit_size,
 		desc = fdt_getprop(fit, node, FIT_DESC_PROP, NULL);
 		type = fdt_getprop(fit, node, FIT_TYPE_PROP, NULL);
 
-		if (!image->kernel.data &&
+		if (!has_kernel &&
 		    (recovery_is_kernel_name(node_name) ||
 		     recovery_is_kernel_name(desc) ||
 		     (type && !strcasecmp(type, "kernel")))) {
-			image->kernel.data = data;
-			image->kernel.size = size;
+			has_kernel = true;
 			continue;
 		}
 
@@ -1476,6 +1477,16 @@ static int recovery_fit_extract_firmware(const void *fit, size_t fit_size,
 			image->rootfs.data = data;
 			image->rootfs.size = size;
 		}
+	}
+
+	if (has_kernel) {
+		boot_fit_size = fit_get_size(fit);
+		if (!boot_fit_size || boot_fit_size > fit_size)
+			return -EINVAL;
+
+		/* The eMMC kernel partition is bootm input, not a raw kernel blob. */
+		image->kernel.data = fit;
+		image->kernel.size = boot_fit_size;
 	}
 
 	return image->kernel.data || image->rootfs.data ? 0 : -ENOENT;
@@ -1639,7 +1650,7 @@ static int recovery_extract_firmware(const void *data, size_t size,
 
 	ret = recovery_fit_extract_firmware(data, size, image);
 	if (!ret && image->kernel.data && image->rootfs.data) {
-		printf("Firmware image: FIT sections kernel=%lu rootfs=%lu\n",
+		printf("Firmware image: bootable FIT=%lu rootfs=%lu\n",
 		       (ulong)image->kernel.size, (ulong)image->rootfs.size);
 		return 0;
 	}
@@ -1660,6 +1671,84 @@ static int recovery_extract_firmware(const void *data, size_t size,
 
 	printf("Firmware image must contain both kernel/hlos and root/rootfs/fs payloads\n");
 	return -EINVAL;
+}
+
+static int recovery_verify_fit_payload(const void *fit, size_t payload_size)
+{
+	const void *data;
+	size_t fit_size;
+	size_t data_size;
+	int images, node, ret;
+
+	ret = fit_check_format(fit, payload_size);
+	if (ret) {
+		printf("Payload must be a complete FIT image: %d\n", ret);
+		return ret;
+	}
+
+	fit_size = fit_get_size(fit);
+	if (!fit_size || fit_size > payload_size) {
+		printf("FIT payload is truncated\n");
+		return -EINVAL;
+	}
+
+	images = fdt_path_offset(fit, FIT_IMAGES_PATH);
+	if (images < 0)
+		return images;
+
+	fdt_for_each_subnode(node, fit, images) {
+		ret = fit_image_get_data(fit, node, &data, &data_size);
+		if (ret || !recovery_data_range_ok(fit, payload_size,
+						   data, data_size)) {
+			printf("FIT image data is missing or outside the payload\n");
+			return ret ?: -EINVAL;
+		}
+	}
+
+	if (!fit_all_image_verify(fit)) {
+		printf("FIT image hash verification failed\n");
+		return -EBADMSG;
+	}
+
+	return 0;
+}
+
+static int
+recovery_validate_sbe1v1k_kernel_fit(const struct recovery_image_part *kernel)
+{
+	u8 type, os, arch;
+	int conf, node, ret;
+
+	ret = recovery_verify_fit_payload(kernel->data, kernel->size);
+	if (ret)
+		return ret;
+
+	conf = fit_conf_get_node(kernel->data, NULL);
+	if (conf < 0) {
+		printf("SBE1V1K kernel FIT has no usable default configuration: %d\n",
+		       conf);
+		return conf;
+	}
+
+	node = fit_conf_get_prop_node(kernel->data, conf,
+				      FIT_KERNEL_PROP, IH_PHASE_NONE);
+	if (node < 0) {
+		printf("SBE1V1K kernel FIT default configuration has no kernel: %d\n",
+		       node);
+		return node;
+	}
+
+	if (fit_image_get_type(kernel->data, node, &type) ||
+	    fit_image_get_os(kernel->data, node, &os) ||
+	    fit_image_get_arch(kernel->data, node, &arch) ||
+	    type != IH_TYPE_KERNEL || os != IH_OS_LINUX ||
+	    arch != IH_ARCH_ARM64) {
+		printf("SBE1V1K FIT kernel must be type=kernel, os=linux, arch=arm64\n");
+		return -ENOEXEC;
+	}
+
+	printf("SBE1V1K boot FIT validation passed\n");
+	return 0;
 }
 
 static int recovery_mmc_write_part(const char *spec,
@@ -2588,6 +2677,12 @@ static int recovery_flash_mmc_firmware(struct recovery_status_led_ctrl *status_l
 	if (ret)
 		return ret;
 
+	if (recovery_board_is_sbe1v1k()) {
+		ret = recovery_validate_sbe1v1k_kernel_fit(&image.kernel);
+		if (ret)
+			return ret;
+	}
+
 	prog_phase = 2;
 	prog_done = 0;
 	prog_erase_done = 0;
@@ -2642,11 +2737,17 @@ static int recovery_flash_mmc_uboot(struct recovery_status_led_ctrl *status_leds
 		return -EFBIG;
 	}
 
-	ret = fit_check_format(recv_base, recv_off);
+	ret = recovery_verify_fit_payload(recv_base, recv_off);
 	if (ret) {
 		printf("Chainloader upload must be a raw FIT image (.itb): %d\n",
 		       ret);
 		return ret;
+	}
+
+	if (recovery_board_is_sbe1v1k() &&
+	    !recovery_is_sbe1v1k_chainloader_fit(recv_base, recv_off)) {
+		printf("Chainloader upload is not an SBE1V1K chainloader FIT\n");
+		return -ENOEXEC;
 	}
 
 	prog_phase = 2;
