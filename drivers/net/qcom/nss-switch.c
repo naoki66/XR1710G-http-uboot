@@ -1345,6 +1345,7 @@ void ppe_xgmac_configuration(phys_addr_t reg_base, u32 portid,
 	/*
 	 * Speed set
 	 */
+	reg_value &= ~XGMAC_SPEED_SELECT_MASK;
 	switch (speed) {
 	case 0:
 	case 1:

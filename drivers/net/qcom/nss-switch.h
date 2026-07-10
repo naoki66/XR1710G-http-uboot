@@ -990,6 +990,7 @@ static inline void edma_unified_write_masked(phys_addr_t addr, u32 val, struct e
 #define NSS_SWITCH_XGMAC_MIB_RX_OCTETS		0x908
 #define USS					BIT(31)
 #define SS(i)					((i) << 29)
+#define XGMAC_SPEED_SELECT_MASK			GENMASK(31, 29)
 #define JD					BIT(16)
 #define TE					BIT(0)
 #define NSS_SWITCH_XGMAC_MAC_RX_CONFIGURATION	0x4000
