@@ -135,6 +135,9 @@ upload fully erases `chainloader`, then writes the raw chainloader FIT.
 Recovery uses exact eMMC erase/TRIM when the device and partition alignment
 allow it. Otherwise, it zero-fills every logical block in the partition so an
 erase-group rounding operation cannot overwrite an adjacent GPT partition.
+The HTTP firmware upload is capped at 128 MiB. This covers the combined
+OpenWrt image while keeping the buffer at `0x60000000` below U-Boot's runtime
+and 256 MiB malloc area; GPT partition capacity is not a safe RAM upload limit.
 
 The installed stock U-Boot environment is equivalent to:
 
