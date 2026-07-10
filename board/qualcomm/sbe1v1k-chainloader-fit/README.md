@@ -271,13 +271,16 @@ board/qualcomm/sbe1v1k-chainloader-fit/build-chainloader-fit.sh \
 Default output:
 
 - `sbe1v1k-chainloader/sbe1v1k-chainloader.itb`
+- `sbe1v1k-chainloader/sbe1v1k-chainloader-partition.img`
 - `sbe1v1k-chainloader/sbe1v1k-chainloader-hlos.elf`
 - `sbe1v1k-chainloader/sbe1v1k-chainloader-shim.bin`
 - `sbe1v1k-chainloader/sbe1v1k-chainloader-control.dtb`
 
-The build script prints SHA256 values for these artifacts and the embedded
-U-Boot banner found in the generated raw FIT. Check that banner before copying
-or serving the FIT.
+The partition image contains the raw FIT followed by zeroes to fill the complete
+4 MiB `chainloader` partition. Use it only for offline full-partition writes;
+HTTP recovery and TFTP use the raw `.itb`. The build script prints SHA256 values
+for these artifacts and the embedded U-Boot banner found in the generated raw
+FIT. Check that banner before copying or serving the FIT.
 
 The `*-hlos.elf` wrapper is generated only for inspection and experiments with
 the original Askey loader format. The normal chainloader path is the raw FIT.

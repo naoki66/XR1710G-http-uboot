@@ -100,7 +100,9 @@ shim_bin="$outdir/sbe1v1k-chainloader-shim.bin"
 shim_map="$outdir/sbe1v1k-chainloader-shim.map"
 control_dtb="$outdir/sbe1v1k-chainloader-control.dtb"
 output_fit="$outdir/sbe1v1k-chainloader.itb"
+output_partition="$outdir/sbe1v1k-chainloader-partition.img"
 output_hlos="$outdir/sbe1v1k-chainloader-hlos.elf"
+partition_size=$((4 * 1024 * 1024))
 
 cflags="
 	-Os
@@ -149,6 +151,14 @@ sed \
 	"$script_dir/sbe1v1k-chainloader.its.in" > "$its"
 
 "$mkimage" -f "$its" "$output_fit"
+fit_size=$(wc -c < "$output_fit")
+if [ "$fit_size" -gt "$partition_size" ]; then
+	echo "Chainloader FIT is too large for the 4 MiB partition: $fit_size bytes" >&2
+	exit 1
+fi
+
+dd if=/dev/zero of="$output_partition" bs=1048576 count=4 2>/dev/null
+dd if="$output_fit" of="$output_partition" conv=notrunc 2>/dev/null
 "$dumpimage" -l "$output_fit"
 python3 "$script_dir/wrap-hlos-elf.py" \
 	--input "$output_fit" \
@@ -156,7 +166,9 @@ python3 "$script_dir/wrap-hlos-elf.py" \
 
 echo
 echo "Generated FIT:  $output_fit"
+echo "Generated partition image: $output_partition"
 echo "Generated HLOS: $output_hlos"
 echo "Generated shim: $shim_bin"
 echo "Generated DTB:  $control_dtb"
-print_artifact_info "$output_fit" "$output_hlos" "$shim_bin" "$control_dtb" "$payload"
+print_artifact_info "$output_fit" "$output_partition" "$output_hlos" \
+	"$shim_bin" "$control_dtb" "$payload"
