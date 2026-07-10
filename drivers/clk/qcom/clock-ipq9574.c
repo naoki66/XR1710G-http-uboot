@@ -854,6 +854,13 @@ static int ipq9574_enable(struct clk *clk)
 	return 0;
 }
 
+static int ipq9574_disable(struct clk *clk)
+{
+	struct msm_clk_priv *priv = dev_get_priv(clk->dev);
+
+	return qcom_gate_clk_dis(priv, clk->id);
+}
+
 static const struct qcom_reset_map ipq9574_gcc_resets[] = {
 	[GCC_SDCC_BCR]				= {0x33000, 0},
 	[GCC_UNIPHY0_SOFT_RESET]		= {0x17050, 0},
@@ -987,6 +994,7 @@ static struct msm_clk_data ipq9574_gcc_data = {
 	.clks = ipq9574_clks,
 	.num_clks = ARRAY_SIZE(ipq9574_clks),
 	.enable = ipq9574_enable,
+	.disable = ipq9574_disable,
 	.set_rate = ipq9574_set_rate,
 	.reset_set = ipq9574_reset_set,
 };

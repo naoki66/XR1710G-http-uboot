@@ -96,6 +96,7 @@ struct msm_clk_data {
 	const char * const		*dbg_rcg_names;
 
 	int (*enable)(struct clk *clk);
+	int (*disable)(struct clk *clk);
 	unsigned long (*set_rate)(struct clk *clk, unsigned long rate);
 	int (*reset_set)(struct reset_ctl *rst, bool assert);
 };
@@ -121,5 +122,6 @@ void clk_rcg_set_rate_v2(phys_addr_t base, uint32_t cmd_rcgr,
 void clk_phy_mux_enable(phys_addr_t base, uint32_t cmd_rcgr, bool enabled);
 
 int qcom_gate_clk_en(const struct msm_clk_priv *priv, unsigned long id);
+int qcom_gate_clk_dis(const struct msm_clk_priv *priv, unsigned long id);
 
 #endif

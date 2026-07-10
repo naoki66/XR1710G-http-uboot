@@ -101,6 +101,35 @@ int qcom_gate_clk_en(const struct msm_clk_priv *priv, unsigned long id)
 	return 0;
 }
 
+int qcom_gate_clk_dis(const struct msm_clk_priv *priv, unsigned long id)
+{
+	if (id >= priv->data->num_clks || priv->data->clks[id].reg == 0) {
+		log_err("gcc@%#08llx: unknown clock ID %lu!\n",
+			priv->base, id);
+		return -ENOENT;
+	}
+
+	clrbits_le32(priv->base + priv->data->clks[id].reg,
+		     priv->data->clks[id].en_val);
+	if (priv->data->clks[id].cbcr_reg) {
+		unsigned int count;
+		u32 val;
+
+		for (count = 0; count < 200; count++) {
+			val = readl(priv->base + priv->data->clks[id].cbcr_reg);
+			if (val & CBCR_BRANCH_OFF_BIT)
+				break;
+			udelay(1);
+		}
+		if (WARN(count == 200,
+			 "WARNING: Clock @ %#lx [%#010x] stuck at on\n",
+			 priv->data->clks[id].cbcr_reg, val))
+			return -EBUSY;
+	}
+
+	return 0;
+}
+
 #define APPS_CMD_RCGR_UPDATE BIT(0)
 
 /* Update clock command via CMD_RCGR */
@@ -285,6 +314,16 @@ static int msm_clk_enable(struct clk *clk)
 	return 0;
 }
 
+static int msm_clk_disable(struct clk *clk)
+{
+	struct msm_clk_data *data = (struct msm_clk_data *)dev_get_driver_data(clk->dev);
+
+	if (data->disable)
+		return data->disable(clk);
+
+	return -ENOSYS;
+}
+
 static void dump_gplls(struct udevice *dev, phys_addr_t base)
 {
 	struct msm_clk_data *data = (struct msm_clk_data *)dev_get_driver_data(dev);
@@ -403,6 +442,7 @@ static void __maybe_unused msm_dump_clks(struct udevice *dev)
 static struct clk_ops msm_clk_ops = {
 	.set_rate = msm_clk_set_rate,
 	.enable = msm_clk_enable,
+	.disable = msm_clk_disable,
 #if IS_ENABLED(CONFIG_CMD_CLK)
 	.dump = msm_dump_clks,
 #endif
