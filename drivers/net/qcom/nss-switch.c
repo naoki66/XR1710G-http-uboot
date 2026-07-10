@@ -72,6 +72,11 @@ static bool ipq_edma_debug_trace_enabled;
 static int ipq_eth_get_port_reset(struct udevice *dev, struct port_info *port,
 				  const char *port_name, const char *dev_name,
 				  struct reset_ctl *rst);
+static int ipq_eth_get_pcs_channel_clk(struct udevice *dev,
+				       struct port_info *port,
+				       const char *pcs_name,
+				       const char *dev_name,
+				       struct clk *clk);
 static int ipq_eth_reset_edma_node(struct udevice *dev);
 static ulong ipq_eth_uniphy_parent_rate(struct port_info *port);
 static ulong ipq_eth_port_clk_data(struct port_info *port);
@@ -957,6 +962,42 @@ static int ppe_uniphy_10g_r_linkup(u32 uniphy_index)
 	return 0;
 }
 
+static int ppe_uniphy_port_clocks_set(struct port_info *port, bool enable)
+{
+	struct clk rx_clk, tx_clk;
+	char clk_name[64];
+	int ret;
+
+	snprintf(clk_name, sizeof(clk_name),
+		 "nss_cc_uniphy_port%d_rx_clk", port->id);
+	ret = ipq_eth_get_pcs_channel_clk(port->dev, port, "rx", clk_name,
+					  &rx_clk);
+	if (ret)
+		return ret;
+
+	snprintf(clk_name, sizeof(clk_name),
+		 "nss_cc_uniphy_port%d_tx_clk", port->id);
+	ret = ipq_eth_get_pcs_channel_clk(port->dev, port, "tx", clk_name,
+					  &tx_clk);
+	if (ret)
+		return ret;
+
+	ret = enable ? clk_enable(&rx_clk) : clk_disable(&rx_clk);
+	if (ret)
+		return ret;
+
+	ret = enable ? clk_enable(&tx_clk) : clk_disable(&tx_clk);
+	if (ret) {
+		if (enable)
+			clk_disable(&rx_clk);
+		else
+			clk_enable(&rx_clk);
+		return ret;
+	}
+
+	return 0;
+}
+
 static void ppe_uniphy_10g_r_mode_set(struct port_info *port)
 {
 	ppe_uniphy_reset(port, false, true);
@@ -979,7 +1020,9 @@ static void ppe_uniphy_usxgmii_mode_set(struct port_info *port)
 {
 	u32 index = port->uniphy_id;
 	phys_addr_t base = port->uniphy_base;
+	bool clocks_disabled = false;
 	u32 reg_value;
+	int ret;
 
 	writel(UNIPHY_MISC2_REG_VALUE, base + UNIPHY_MISC2_REG_OFFSET);
 
@@ -990,7 +1033,15 @@ static void ppe_uniphy_usxgmii_mode_set(struct port_info *port)
 	writel(UNIPHY_PLL_RESET_REG_DEFAULT_VALUE,
 	       base + UNIPHY_PLL_RESET_REG_OFFSET);
 
-	mdelay(REG_DELAY);
+	ppe_uniphy_calibration(port);
+
+	ret = ppe_uniphy_port_clocks_set(port, false);
+	if (ret) {
+		printf("UNIPHY%u port%u clock disable failed: %d\n",
+		       port->uniphy_id, port->id, ret);
+	} else {
+		clocks_disabled = true;
+	}
 
 	ppe_uniphy_reset(port, false, true);
 
@@ -1010,6 +1061,13 @@ static void ppe_uniphy_usxgmii_mode_set(struct port_info *port)
 	mdelay(RESET_DELAY);
 
 	ppe_uniphy_calibration(port);
+
+	if (clocks_disabled) {
+		ret = ppe_uniphy_port_clocks_set(port, true);
+		if (ret)
+			printf("UNIPHY%u port%u clock restore failed: %d\n",
+			       port->uniphy_id, port->id, ret);
+	}
 
 	if (port->phy_25mhz)
 		ppe_uniphy_refclk_set_25M(port);
