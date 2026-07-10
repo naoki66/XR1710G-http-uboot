@@ -84,6 +84,18 @@ ping 192.168.255.2
 nss_debug snapshot 5
 ```
 
+Each snapshot now includes compact EDMA, PPE port/queue, MAC, and UNIPHY
+samples. With trace enabled, network start records a baseline after EDMA reset;
+the post-ping snapshot prints `NSS counters delta`. PPE and MAC pairs are
+`frames/bytes`. For a shorter capture, use `nss_debug counters 5` after the
+failed ping.
+
+At the host, capture the same transaction on the connected interface:
+
+```sh
+sudo tcpdump -eni <interface> 'arp or icmp'
+```
+
 Use the PPE port printed by the latest `PHY<N> Up` line when testing another
 socket. Port 3 is LAN2, not LAN1.
 

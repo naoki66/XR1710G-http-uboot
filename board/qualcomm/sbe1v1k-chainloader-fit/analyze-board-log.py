@@ -68,6 +68,20 @@ PHY_LINK_RE = re.compile(
 SNAPSHOT_PORT_RE = re.compile(
     r"NSS snapshot:\s+requested_port=(?P<port>\d+)\s+requested_queue=(?P<queue>\d+)"
 )
+COUNTER_DELTA_RE = re.compile(
+    r"NSS counters delta: port=(?P<port>\d+) "
+    r"epoch=(?P<epoch_before>\d+)->(?P<epoch_after>\d+) "
+    r"edma_reset=(?P<edma_reset>\d+) "
+    r"txd=(?P<txd_prod>\d+)/(?P<txd_cons>\d+) "
+    r"txc=(?P<txc_prod>\d+)/(?P<txc_cons>\d+) "
+    r"rxd=(?P<rxd_prod>\d+)/(?P<rxd_cons>\d+) "
+    r"rxf=(?P<rxf_prod>\d+)/(?P<rxf_cons>\d+) "
+    r"ppe_port=(?P<ppe_port_packets>\d+)/(?P<ppe_port_bytes>\d+) "
+    r"ppe_queue=(?P<ppe_queue_packets>\d+)/(?P<ppe_queue_bytes>\d+) "
+    r"mac_tx=(?P<mac_tx_frames>\d+)/(?P<mac_tx_bytes>\d+) "
+    r"mac_rx=(?P<mac_rx_frames>\d+)/(?P<mac_rx_bytes>\d+) "
+    r"counter_reset=(?P<counter_reset>\d+)"
+)
 
 
 def repo_release():
@@ -163,6 +177,10 @@ def collect(text):
     snapshot_ports = [
         int(match.group("port")) for match in SNAPSHOT_PORT_RE.finditer(text)
     ]
+    counter_deltas = [
+        {key: int(value) for key, value in match.groupdict().items()}
+        for match in COUNTER_DELTA_RE.finditer(text)
+    ]
 
     return {
         "banners": banners,
@@ -176,6 +194,7 @@ def collect(text):
         "counters": counters,
         "phy_links": phy_links,
         "snapshot_ports": snapshot_ports,
+        "counter_deltas": counter_deltas,
         "alive_hosts": PING_ALIVE_RE.findall(text),
         "has_snapshot": "NSS snapshot:" in text,
         "has_ping_fail": "ping failed" in text,
@@ -189,6 +208,46 @@ def print_list(title, values):
         return
     for value in values:
         print(f"  {value}")
+
+
+def counter_path_verdict(delta):
+    if delta["mac_rx_frames"]:
+        if not delta["edma_reset"] and not delta["rxd_prod"]:
+            return "RX reached the MAC but not EDMA; inspect PPE ingress and QID-to-ring routing."
+        if delta["rxd_prod"]:
+            return "RX reached EDMA; inspect RX descriptor parsing and the network-stack response."
+
+    if delta["mac_tx_frames"]:
+        return (
+            "TX reached the MAC; use host tcpdump to separate PCS/PHY/wire "
+            "loss from missing replies."
+        )
+
+    if delta["ppe_port_packets"] or delta["ppe_queue_packets"]:
+        return (
+            "PPE egress counters moved but the MAC did not; inspect port mux, "
+            "XGMAC enable, and PCS state."
+        )
+
+    if not delta["edma_reset"] and (delta["txc_prod"] or delta["txc_cons"]):
+        return (
+            "EDMA completed TX but PPE egress counters did not move; inspect "
+            "descriptor port metadata."
+        )
+
+    if not delta["edma_reset"] and (delta["txd_prod"] or delta["txd_cons"]):
+        return (
+            "EDMA TX descriptors moved without completion; inspect TX ring "
+            "control and completion mapping."
+        )
+
+    if delta["edma_reset"]:
+        return (
+            "EDMA reset occurred between samples; take another counters sample "
+            "after the same net start."
+        )
+
+    return "No TX path counter moved; confirm that the ping emitted an ARP frame in the trace."
 
 
 def analyze(data, expected_release):
@@ -208,6 +267,7 @@ def analyze(data, expected_release):
     misc_nonzero = sorted(set(value for value in data["misc_values"] if value))
     txcmpl_nonzero = [entry for entry in data["txcmpl_errors"] if entry["errors"]]
     last_summary = data["summaries"][-1] if data["summaries"] else None
+    last_counter_delta = data["counter_deltas"][-1] if data["counter_deltas"] else None
     latest_phy_links = {}
     for entry in data["phy_links"]:
         latest_phy_links[entry["port"]] = entry
@@ -315,12 +375,34 @@ def analyze(data, expected_release):
         print()
         print_list("Snapshot PPE ports:", data["snapshot_ports"])
 
+    if data["counter_deltas"]:
+        print()
+        print("Compact path counter deltas:")
+        for entry in data["counter_deltas"]:
+            print(
+                f"  port{entry['port']} epoch={entry['epoch_before']}->"
+                f"{entry['epoch_after']} edma_reset={entry['edma_reset']} "
+                f"txd={entry['txd_prod']}/{entry['txd_cons']} "
+                f"txc={entry['txc_prod']}/{entry['txc_cons']} "
+                f"rxd={entry['rxd_prod']}/{entry['rxd_cons']} "
+                f"ppe={entry['ppe_port_packets']}/"
+                f"{entry['ppe_queue_packets']} "
+                f"mac={entry['mac_tx_frames']}/{entry['mac_rx_frames']}"
+            )
+
     print()
     print("Next-step verdict:")
     if expected_release and not saw_expected:
         print("- Board did not run the expected FIT. Fix TFTP/boot path first.")
     elif data["alive_hosts"]:
         print("- Ping succeeded. EDMA reset/index, TX completion, RX, and GMAC egress are working for this port.")
+    elif data["has_ping_fail"] and last_counter_delta:
+        print(f"- {counter_path_verdict(last_counter_delta)}")
+        if last_counter_delta["counter_reset"]:
+            print(
+                "- A PPE/MAC counter reset was detected; treat its delta as a "
+                "post-reset absolute value."
+            )
     elif unpadded_tx:
         print("- Short EDMA frames are still unpadded. Confirm the board loaded this build.")
     elif padded_tx and any(value & 0x40 for value in misc_nonzero):

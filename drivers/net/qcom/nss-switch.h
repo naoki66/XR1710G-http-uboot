@@ -983,6 +983,11 @@ static inline void edma_unified_write_masked(phys_addr_t addr, u32 val, struct e
 
 #define PPE_SWITCH_NSS_SWITCH_XGMAC0		0x500000
 #define NSS_SWITCH_XGMAC_MAC_TX_CONFIGURATION	0x4000
+#define NSS_SWITCH_XGMAC_MMC_CONTROL		0x800
+#define NSS_SWITCH_XGMAC_MIB_TX_OCTETS		0x814
+#define NSS_SWITCH_XGMAC_MIB_TX_FRAMES		0x81c
+#define NSS_SWITCH_XGMAC_MIB_RX_FRAMES		0x900
+#define NSS_SWITCH_XGMAC_MIB_RX_OCTETS		0x908
 #define USS					BIT(31)
 #define SS(i)					((i) << 29)
 #define JD					BIT(16)

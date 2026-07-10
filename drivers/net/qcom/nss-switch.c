@@ -52,6 +52,7 @@ static u32 ipq_edma_tx_frame_log_count;
 static u32 ipq_edma_tx_stall_dump_count;
 static ulong ipq_edma_debug_last_ms;
 static ulong ipq_eth_link_refresh_last_ms;
+static u32 ipq_edma_start_generation;
 
 enum ipq_edma_debug_tdes4_mode {
 	IPQ_EDMA_TDES4_LEGACY = 0,
@@ -2171,6 +2172,45 @@ static u32 ipq_eth_debug_queue_for_port(u32 port_id)
 	return port_id ? ((port_id * 0x10) + 0x70) : 0;
 }
 
+struct ipq_eth_debug_counter_sample {
+	u32 epoch;
+	u32 port_id;
+	u32 queue_id;
+	u32 uniphy_id;
+	u32 speed;
+	u32 bridge;
+	u32 txd_prod;
+	u32 txd_cons;
+	u32 txd_count;
+	u32 txc_prod;
+	u32 txc_cons;
+	u32 txc_count;
+	u32 rxd_prod;
+	u32 rxd_cons;
+	u32 rxd_count;
+	u32 rxf_prod;
+	u32 rxf_cons;
+	u32 rxf_count;
+	u32 misc;
+	u32 ppe_port_packets;
+	u32 ppe_queue_packets;
+	u64 ppe_port_bytes;
+	u64 ppe_queue_bytes;
+	u64 mac_tx_frames;
+	u64 mac_tx_bytes;
+	u64 mac_rx_frames;
+	u64 mac_rx_bytes;
+	u32 mac_tx_cfg;
+	u32 mac_rx_cfg;
+	u32 mac_mib_cfg;
+	u32 uniphy_mode;
+	u32 uniphy_link;
+	bool xgmac;
+};
+
+static struct ipq_eth_debug_counter_sample ipq_eth_debug_previous_counters;
+static bool ipq_eth_debug_previous_counters_valid;
+
 static u16 ipq_eth_read_be16(const uchar *p)
 {
 	return ((u16)p[0] << 8) | p[1];
@@ -2294,6 +2334,286 @@ static void ipq_eth_debug_dump_counter3(const char *name, phys_addr_t base,
 	printf(" %s @0x%08x: packets=%u bytes=0x%02x%08x raw=%08x/%08x/%08x\n",
 	       name, off, packets, bytes_hi, bytes_lo, packets, bytes_lo,
 		       readl(base + off + 8));
+}
+
+static u64 ipq_eth_debug_read_counter64(phys_addr_t base, u32 off)
+{
+	u32 high, high_again, low;
+
+	do {
+		high = readl(base + off + sizeof(u32));
+		low = readl(base + off);
+		high_again = readl(base + off + sizeof(u32));
+	} while (high != high_again);
+
+	return low | ((u64)high << 32);
+}
+
+static void ipq_eth_debug_read_counter3(phys_addr_t base, u32 off,
+					u32 *packets, u64 *bytes)
+{
+	*packets = readl(base + off);
+	*bytes = readl(base + off + 4) |
+		((u64)(readl(base + off + 8) & 0xff) << 32);
+}
+
+static u32 ipq_ring_delta(u32 current, u32 previous, u32 count)
+{
+	if (!count)
+		return 0;
+	if (current >= previous)
+		return current - previous;
+
+	return count - previous + current;
+}
+
+static u64 counter_delta(u64 current, u64 previous, bool *reset)
+{
+	if (current < previous) {
+		*reset = true;
+		return current;
+	}
+
+	return current - previous;
+}
+
+static int
+ipq_eth_debug_collect_counters(struct ipq_eth_dev *priv, u32 port_id,
+			       struct ipq_eth_debug_counter_sample *sample)
+{
+	struct ipq_edma_hw *ehw = &priv->hw;
+	struct ipq_edma_rxdesc_ring *rxdesc;
+	struct ipq_edma_rxfill_ring *rxfill;
+	struct ipq_edma_txdesc_ring *txdesc;
+	struct ipq_edma_txcmpl_ring *txcmpl;
+	struct port_info *port;
+	phys_addr_t ppe_base = priv->ppe.base;
+	phys_addr_t uniphy_base;
+	u32 macid, mac_base, off;
+
+	memset(sample, 0, sizeof(*sample));
+
+	port = ipq_eth_debug_find_port(priv, port_id);
+	if (!port) {
+		printf("NSS counters: PPE port%u is not parsed in DT\n", port_id);
+		return -ENOENT;
+	}
+	if (!ehw->txdesc_ring || !ehw->txcmpl_ring ||
+	    !ehw->rxdesc_ring || !ehw->rxfill_ring) {
+		printf("NSS counters: EDMA rings are not initialized\n");
+		return -ENODEV;
+	}
+
+	txdesc = &ehw->txdesc_ring[0];
+	txcmpl = &ehw->txcmpl_ring[0];
+	rxdesc = &ehw->rxdesc_ring[0];
+	rxfill = &ehw->rxfill_ring[0];
+
+	sample->epoch = ipq_edma_start_generation;
+	sample->port_id = port_id;
+	sample->queue_id = ipq_eth_debug_queue_for_port(port_id);
+	sample->uniphy_id = port->uniphy_id;
+	sample->speed = port->cur_speed;
+	sample->xgmac = port->xgmac;
+	sample->bridge = readl(ppe_base + PPE_PORT_BRIDGE_CTRL_OFFSET +
+			       port_id * PORT_BRIDGE_CTRL_INC);
+
+	sample->txd_count = txdesc->count;
+	sample->txd_prod = ipq_edma_ring_index(readl(ehw->iobase +
+			EDMA_REG_TXDESC_PROD_IDX(txdesc->id)) &
+			EDMA_TXDESC_PROD_IDX_MASK, txdesc->count);
+	sample->txd_cons = ipq_edma_ring_index(readl(ehw->iobase +
+			EDMA_REG_TXDESC_CONS_IDX(txdesc->id)) &
+			EDMA_TXDESC_CONS_IDX_MASK, txdesc->count);
+
+	sample->txc_count = txcmpl->count;
+	sample->txc_prod = ipq_edma_ring_index(readl(ehw->iobase +
+			EDMA_REG_TXCMPL_PROD_IDX(txcmpl->id)) &
+			EDMA_TXCMPL_PROD_IDX_MASK, txcmpl->count);
+	sample->txc_cons = ipq_edma_ring_index(readl(ehw->iobase +
+			EDMA_REG_TXCMPL_CONS_IDX(txcmpl->id)) &
+			EDMA_TXCMPL_CONS_IDX_MASK, txcmpl->count);
+
+	sample->rxd_count = rxdesc->count;
+	sample->rxd_prod = ipq_edma_ring_index(readl(ehw->iobase +
+			EDMA_REG_RXDESC_PROD_IDX(rxdesc->id)) &
+			EDMA_RXDESC_PROD_IDX_MASK, rxdesc->count);
+	sample->rxd_cons = ipq_edma_ring_index(readl(ehw->iobase +
+			EDMA_REG_RXDESC_CONS_IDX(rxdesc->id)) &
+			EDMA_RXDESC_CONS_IDX_MASK, rxdesc->count);
+
+	sample->rxf_count = rxfill->count;
+	sample->rxf_prod = ipq_edma_ring_index(readl(ehw->iobase +
+			EDMA_REG_RXFILL_PROD_IDX(rxfill->id)) &
+			EDMA_RXFILL_PROD_IDX_MASK, rxfill->count);
+	sample->rxf_cons = ipq_edma_ring_index(readl(ehw->iobase +
+			EDMA_REG_RXFILL_CONS_IDX(rxfill->id)) &
+			EDMA_RXFILL_CONS_IDX_MASK, rxfill->count);
+	sample->misc = readl(ehw->iobase + EDMA_REG_MISC_INT_STAT);
+
+	off = PPE_PTX_CSR_BASE_ADDR + PPE_PORT_TX_COUNTER_TBL_ADDR +
+	      port_id * PPE_PORT_TX_COUNTER_TBL_INC;
+	ipq_eth_debug_read_counter3(ppe_base, off, &sample->ppe_port_packets,
+				    &sample->ppe_port_bytes);
+	off = PPE_PTX_CSR_BASE_ADDR + PPE_QM_QUEUE_TX_COUNTER_TBL_ADDR +
+	      sample->queue_id * PPE_QM_QUEUE_TX_COUNTER_TBL_INC;
+	ipq_eth_debug_read_counter3(ppe_base, off, &sample->ppe_queue_packets,
+				    &sample->ppe_queue_bytes);
+
+	macid = port_id - 1;
+	if (sample->xgmac) {
+		mac_base = PPE_SWITCH_NSS_SWITCH_XGMAC0 +
+			   macid * NSS_SWITCH_XGMAC_MAC_TX_CONFIGURATION;
+		sample->mac_tx_cfg = readl(ppe_base + mac_base);
+		sample->mac_rx_cfg = readl(ppe_base + mac_base +
+					  MAC_RX_CONFIGURATION_ADDRESS);
+		sample->mac_mib_cfg = readl(ppe_base + mac_base +
+					    NSS_SWITCH_XGMAC_MMC_CONTROL);
+		off = mac_base + NSS_SWITCH_XGMAC_MIB_TX_OCTETS;
+		sample->mac_tx_bytes = ipq_eth_debug_read_counter64(ppe_base, off);
+		off = mac_base + NSS_SWITCH_XGMAC_MIB_TX_FRAMES;
+		sample->mac_tx_frames = ipq_eth_debug_read_counter64(ppe_base, off);
+		off = mac_base + NSS_SWITCH_XGMAC_MIB_RX_FRAMES;
+		sample->mac_rx_frames = ipq_eth_debug_read_counter64(ppe_base, off);
+		off = mac_base + NSS_SWITCH_XGMAC_MIB_RX_OCTETS;
+		sample->mac_rx_bytes = ipq_eth_debug_read_counter64(ppe_base, off);
+	} else {
+		mac_base = PPE_MAC_ENABLE + macid * 0x200;
+		sample->mac_tx_cfg = readl(ppe_base + mac_base);
+		sample->mac_rx_cfg = sample->mac_tx_cfg;
+		sample->mac_mib_cfg = readl(ppe_base + mac_base +
+					    PPE_MAC_MIB_CTL_OFF);
+		sample->mac_tx_frames = (u64)readl(ppe_base + mac_base + 0xa0) +
+					readl(ppe_base + mac_base + 0xa8) +
+					readl(ppe_base + mac_base + 0xf0);
+		sample->mac_tx_bytes =
+			ipq_eth_debug_read_counter64(ppe_base, mac_base + 0xcc);
+		sample->mac_rx_frames = (u64)readl(ppe_base + mac_base + 0x40) +
+					readl(ppe_base + mac_base + 0x48) +
+					readl(ppe_base + mac_base + 0x94);
+		sample->mac_rx_bytes =
+			ipq_eth_debug_read_counter64(ppe_base, mac_base + 0x84);
+	}
+
+	uniphy_base = priv->uniphy_base + port->uniphy_id * priv->uniphy_size;
+	sample->uniphy_mode = readl(uniphy_base + PPE_UNIPHY_MODE_CONTROL);
+	sample->uniphy_link = readl(uniphy_base + UNIPHY_INSTANCE_LINK_DETECT);
+
+	return 0;
+}
+
+static void
+ipq_eth_debug_dump_counter_delta(const struct ipq_eth_debug_counter_sample *prev,
+				 const struct ipq_eth_debug_counter_sample *cur)
+{
+	bool reset = false;
+	bool edma_reset = prev->epoch != cur->epoch;
+	u32 txd_prod = 0, txd_cons = 0, txc_prod = 0, txc_cons = 0;
+	u32 rxd_prod = 0, rxd_cons = 0, rxf_prod = 0, rxf_cons = 0;
+	u64 ppe_port_packets, ppe_port_bytes;
+	u64 ppe_queue_packets, ppe_queue_bytes;
+	u64 mac_tx_frames, mac_tx_bytes, mac_rx_frames, mac_rx_bytes;
+
+	if (!edma_reset) {
+		txd_prod = ipq_ring_delta(cur->txd_prod, prev->txd_prod,
+					  cur->txd_count);
+		txd_cons = ipq_ring_delta(cur->txd_cons, prev->txd_cons,
+					  cur->txd_count);
+		txc_prod = ipq_ring_delta(cur->txc_prod, prev->txc_prod,
+					  cur->txc_count);
+		txc_cons = ipq_ring_delta(cur->txc_cons, prev->txc_cons,
+					  cur->txc_count);
+		rxd_prod = ipq_ring_delta(cur->rxd_prod, prev->rxd_prod,
+					  cur->rxd_count);
+		rxd_cons = ipq_ring_delta(cur->rxd_cons, prev->rxd_cons,
+					  cur->rxd_count);
+		rxf_prod = ipq_ring_delta(cur->rxf_prod, prev->rxf_prod,
+					  cur->rxf_count);
+		rxf_cons = ipq_ring_delta(cur->rxf_cons, prev->rxf_cons,
+					  cur->rxf_count);
+	}
+
+	ppe_port_packets = counter_delta(cur->ppe_port_packets, prev->ppe_port_packets, &reset);
+	ppe_port_bytes = counter_delta(cur->ppe_port_bytes, prev->ppe_port_bytes, &reset);
+	ppe_queue_packets = counter_delta(cur->ppe_queue_packets, prev->ppe_queue_packets, &reset);
+	ppe_queue_bytes = counter_delta(cur->ppe_queue_bytes, prev->ppe_queue_bytes, &reset);
+	mac_tx_frames = counter_delta(cur->mac_tx_frames, prev->mac_tx_frames, &reset);
+	mac_tx_bytes = counter_delta(cur->mac_tx_bytes, prev->mac_tx_bytes, &reset);
+	mac_rx_frames = counter_delta(cur->mac_rx_frames, prev->mac_rx_frames, &reset);
+	mac_rx_bytes = counter_delta(cur->mac_rx_bytes, prev->mac_rx_bytes, &reset);
+
+	printf("NSS counters delta: port=%u epoch=%u->%u edma_reset=%u ",
+	       cur->port_id, prev->epoch, cur->epoch, edma_reset);
+	printf("txd=%u/%u txc=%u/%u rxd=%u/%u rxf=%u/%u ",
+	       txd_prod, txd_cons, txc_prod, txc_cons,
+	       rxd_prod, rxd_cons, rxf_prod, rxf_cons);
+	printf("ppe_port=%llu/%llu ppe_queue=%llu/%llu ",
+	       (unsigned long long)ppe_port_packets,
+	       (unsigned long long)ppe_port_bytes,
+	       (unsigned long long)ppe_queue_packets,
+	       (unsigned long long)ppe_queue_bytes);
+	printf("mac_tx=%llu/%llu mac_rx=%llu/%llu counter_reset=%u\n",
+	       (unsigned long long)mac_tx_frames,
+	       (unsigned long long)mac_tx_bytes,
+	       (unsigned long long)mac_rx_frames,
+	       (unsigned long long)mac_rx_bytes, reset);
+}
+
+static int ipq_eth_debug_dump_counters(struct ipq_eth_dev *priv, u32 port_id)
+{
+	struct ipq_eth_debug_counter_sample sample;
+	int ret;
+
+	if (!port_id)
+		port_id = ipq_eth_debug_active_port(priv);
+	if (!port_id) {
+		printf("NSS counters: no active PPE port, pass one explicitly\n");
+		return -EINVAL;
+	}
+
+	ret = ipq_eth_debug_collect_counters(priv, port_id, &sample);
+	if (ret)
+		return ret;
+
+	printf("NSS counters: epoch=%u port=%u queue=%u mac=%s uniphy=%u ",
+	       sample.epoch, sample.port_id, sample.queue_id,
+	       sample.xgmac ? "xgmac" : "gmac", sample.uniphy_id);
+	printf("speed=%u bridge=%08x txmac=%u\n",
+	       sample.speed, sample.bridge,
+	       !!(sample.bridge & ppe_port_bridge_txmac_mask()));
+	printf("NSS counters edma: txd=%u/%u txc=%u/%u rxd=%u/%u ",
+	       sample.txd_prod, sample.txd_cons,
+	       sample.txc_prod, sample.txc_cons,
+	       sample.rxd_prod, sample.rxd_cons);
+	printf("rxf=%u/%u misc=%08x\n",
+	       sample.rxf_prod, sample.rxf_cons, sample.misc);
+	printf("NSS counters path: ppe_port=%u/%llu ppe_queue=%u/%llu ",
+	       sample.ppe_port_packets,
+	       (unsigned long long)sample.ppe_port_bytes,
+	       sample.ppe_queue_packets,
+	       (unsigned long long)sample.ppe_queue_bytes);
+	printf("mac_tx=%llu/%llu mac_rx=%llu/%llu\n",
+	       (unsigned long long)sample.mac_tx_frames,
+	       (unsigned long long)sample.mac_tx_bytes,
+	       (unsigned long long)sample.mac_rx_frames,
+	       (unsigned long long)sample.mac_rx_bytes);
+	printf("NSS counters link: mac_tx_cfg=%08x mac_rx_cfg=%08x mib=%08x ",
+	       sample.mac_tx_cfg, sample.mac_rx_cfg, sample.mac_mib_cfg);
+	printf("uniphy_mode=%08x uniphy_link=%08x\n",
+	       sample.uniphy_mode, sample.uniphy_link);
+
+	if (ipq_eth_debug_previous_counters_valid &&
+	    ipq_eth_debug_previous_counters.port_id == sample.port_id)
+		ipq_eth_debug_dump_counter_delta(&ipq_eth_debug_previous_counters,
+						 &sample);
+	else
+		printf("NSS counters baseline: epoch=%u port=%u\n",
+		       sample.epoch, sample.port_id);
+
+	ipq_eth_debug_previous_counters = sample;
+	ipq_eth_debug_previous_counters_valid = true;
+
+	return 0;
 }
 
 static void ipq_eth_debug_dump_tx_path_for_port(struct ipq_eth_dev *priv,
@@ -3951,6 +4271,7 @@ static void ipq_eth_debug_dump_snapshot(struct ipq_eth_dev *priv, u32 port_id)
 		return;
 	}
 
+	ipq_eth_debug_dump_counters(priv, port_id);
 	ipq_eth_debug_dump_tx_path_for_port(priv, port_id, "snapshot_port");
 	ipq_eth_debug_dump_port_detail(priv, port_id);
 	ipq_eth_debug_dump_gmac(priv, port_id);
@@ -5504,6 +5825,7 @@ static int ipq_eth_start(struct udevice *dev)
 	ret = ipq_eth_reset_edma_node(dev);
 	if (ret && ret != -ENOENT)
 		return ret;
+	ipq_edma_start_generation++;
 
 	ipq_edma_configure_rings(&priv->hw);
 	ipq_edma_program_static_maps(&priv->hw);
@@ -5520,6 +5842,24 @@ static int ipq_eth_start(struct udevice *dev)
 		env_set_ulong("tftpsrcp", tftp_acl_our_port);
 
 	linkup = ipq_eth_refresh_link(priv, false);
+	if (ipq_edma_debug_trace()) {
+		u32 port_id = 0;
+
+		if (ipq_eth_debug_previous_counters_valid) {
+			u32 previous_port = ipq_eth_debug_previous_counters.port_id;
+			struct port_info *port;
+
+			port = ipq_eth_debug_find_port(priv, previous_port);
+
+			if (port && port->cur_speed)
+				port_id = port->id;
+		}
+		if (!port_id)
+			port_id = ipq_eth_debug_active_port(priv);
+
+		if (port_id)
+			ipq_eth_debug_dump_counters(priv, port_id);
+	}
 	if (linkup >= 0)
 		return linkup;
 
@@ -8470,6 +8810,7 @@ static int do_nss_debug(struct cmd_tbl *cmdtp, int flag, int argc,
 			   strcmp(argv[1], "txidx") &&
 			   strcmp(argv[1], "txmap") &&
 			   strcmp(argv[1], "txregs") &&
+			   strcmp(argv[1], "counters") &&
 			   strcmp(argv[1], "snapshot") &&
 			   strcmp(argv[1], "rearm") &&
 			   strcmp(argv[1], "txfix") &&
@@ -8497,7 +8838,8 @@ static int do_nss_debug(struct cmd_tbl *cmdtp, int flag, int argc,
 		}
 	}
 
-	priv = (argc > 1 && !strcmp(argv[1], "snapshot")) ?
+	priv = (argc > 1 && (!strcmp(argv[1], "snapshot") ||
+			  !strcmp(argv[1], "counters"))) ?
 	       ipq_eth_debug_get_priv_relaxed(false) :
 	       ipq_eth_debug_get_priv();
 	if (!priv)
@@ -8584,6 +8926,16 @@ static int do_nss_debug(struct cmd_tbl *cmdtp, int flag, int argc,
 		if (!strcmp(argv[1], "txregs")) {
 			ipq_edma_debug_dump_tx_regs(priv, "cmd");
 			return CMD_RET_SUCCESS;
+		}
+		if (!strcmp(argv[1], "counters")) {
+			u32 port_id = 0;
+
+			if (argc > 3)
+				return CMD_RET_USAGE;
+			if (argc == 3)
+				port_id = simple_strtoul(argv[2], NULL, 0);
+			return ipq_eth_debug_dump_counters(priv, port_id) ?
+				CMD_RET_FAILURE : CMD_RET_SUCCESS;
 		}
 		if (!strcmp(argv[1], "snapshot")) {
 			u32 port_id = 0;
@@ -8677,6 +9029,7 @@ U_BOOT_CMD(nss_debug, 8, 1, do_nss_debug,
 	   "  txidx <txdesc-prod|txdesc-cons|txcmpl-prod|txcmpl-cons> [ring] [value] - dump or write a TX ring index\n"
 	   "  txmap [txdesc-ring txcmpl-ring] - dump or set TXDESC to TXCMPL mapping\n"
 	   "  txregs        - dump EDMA TX ring/global registers\n"
+	   "  counters [ppe-id] - sample compact EDMA/PPE/MAC counters and show deltas\n"
 	   "  snapshot [ppe-id] - dump ports, summary, TX regs, PPE port, GMAC, and UNIPHY\n"
 	   "  rearm         - reset EDMA RX/TX rings to ring-size-local indices\n"
 	   "  txfix         - reprogram EDMA TX rings/map/global registers\n"
