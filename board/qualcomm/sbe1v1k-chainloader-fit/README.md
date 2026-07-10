@@ -79,7 +79,6 @@ UNIPHY1 channel 0. Capture both sides of a failed transaction with:
 
 ```text
 nss_debug trace on
-nss_debug snapshot 5
 ping 192.168.255.2
 nss_debug snapshot 5
 ```
@@ -93,6 +92,8 @@ failed ping.
 At the host, capture the same transaction on the connected interface:
 
 ```sh
+sudo ip addr replace 192.168.255.2/24 dev <interface>
+sudo ip link set <interface> up
 sudo tcpdump -eni <interface> 'arp or icmp'
 ```
 
