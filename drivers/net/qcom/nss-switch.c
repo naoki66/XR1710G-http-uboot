@@ -4600,7 +4600,6 @@ u32 ipq_edma_clean_rx(struct ipq_edma_hw *ehw,
 	u32 prod_raw, cons_raw, prod_idx, cons_idx;
 	int src_port_num;
 	int pkt_length = 0;
-	u16 cleaned_count = 0;
 	bool desc_consumed = false;
 	phys_addr_t reg_base = ehw->iobase;
 
@@ -4663,6 +4662,7 @@ u32 ipq_edma_clean_rx(struct ipq_edma_hw *ehw,
 			       src_port_num, prod_idx, cons_idx);
 			ipq_edma_rx_log_count++;
 		}
+		pkt_length = 0;
 		goto next_rx_desc;
 	}
 
@@ -4673,10 +4673,10 @@ u32 ipq_edma_clean_rx(struct ipq_edma_hw *ehw,
 			       rxdesc_desc->rdes5, prod_idx, cons_idx);
 			ipq_edma_rx_log_count++;
 		}
+		pkt_length = 0;
 		goto next_rx_desc;
 	}
 
-	cleaned_count++;
 	if (ipq_edma_debug_trace() && ipq_edma_rx_log_count < 16) {
 		printf("EDMA RX port=%d len=%d prod=%u cons=%u\n",
 		       src_port_num, pkt_length, prod_idx, cons_idx);
@@ -4735,6 +4735,8 @@ static int ipq_edma_rx_complete(struct ipq_eth_dev *priv, void **buff)
 		return 0;
 	if (!ehw->rxfill_ring || !ehw->rxfill_rings)
 		return 0;
+
+	*buff = NULL;
 
 	for (i = 0; i < ehw->rxdesc_rings; i++) {
 		rxdesc_ring = &ehw->rxdesc_ring[i];
