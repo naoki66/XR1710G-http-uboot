@@ -100,6 +100,7 @@ static bool recovery_board_is_sbe1v1k(void)
 #define RECOVERY_MAX_UBOOT_SIZE_MMC (4 * 1024 * 1024UL)
 #define RECOVERY_KERNEL_PAD_SIZE    (7000 * 1024UL)
 #define RECOVERY_MMC_WRITE_CHUNK    (1024 * 1024UL)
+#define RECOVERY_MMC_STREAM_CHUNK   (1024 * 1024UL)
 #define RECOVERY_MMC_ERASE_CHUNK    (32 * 1024 * 1024ULL)
 #define RECOVERY_MMC_ERASE_PROGRESS_STEPS 1000U
 #define RECOVERY_SQUASHFS_MAGIC      0x73717368U
@@ -177,6 +178,8 @@ static u32 recv_off;
 static u32 recv_total;
 static int post_ok;
 static int upload_done;
+static bool recovery_in_http_callback;
+static struct recovery_status_led_ctrl *recovery_runtime_status_leds;
 static int flash_request;
 static volatile int reboot_request;
 /* Progress for /status polling */
@@ -2014,6 +2017,246 @@ static int recovery_mmc_erase_part(const char *spec,
 	return 0;
 }
 
+#define RECOVERY_MMC_STREAM_PARTS 2
+
+struct recovery_mmc_stream_part {
+	char spec[96];
+	struct blk_desc *desc;
+	struct disk_partition part;
+	size_t expected;
+	size_t written;
+};
+
+struct recovery_mmc_stream {
+	struct recovery_mmc_stream_part parts[RECOVERY_MMC_STREAM_PARTS];
+	u8 *buf;
+	size_t buf_size;
+	size_t buf_used;
+	int part_count;
+	int part_index;
+	int error;
+	bool active;
+};
+
+static struct recovery_mmc_stream recovery_stream;
+static bool recovery_stream_completed;
+
+static void recovery_mmc_stream_reset(void)
+{
+	free(recovery_stream.buf);
+	memset(&recovery_stream, 0, sizeof(recovery_stream));
+}
+
+static int recovery_mmc_stream_add_part(const char *spec, size_t expected)
+{
+	struct recovery_mmc_stream_part *stream_part;
+	unsigned long long capacity;
+	int ret;
+
+	if (recovery_stream.part_count >= RECOVERY_MMC_STREAM_PARTS)
+		return -ENOSPC;
+
+	stream_part = &recovery_stream.parts[recovery_stream.part_count];
+	strlcpy(stream_part->spec, spec, sizeof(stream_part->spec));
+	ret = recovery_get_mmc_part(stream_part->spec, &stream_part->desc,
+				    &stream_part->part);
+	if (ret)
+		return ret;
+
+	capacity = recovery_mmc_part_bytes(&stream_part->part);
+	if (expected > capacity) {
+		printf("Stream payload size %lu exceeds eMMC partition '%s' size %llu\n",
+		       (ulong)expected, stream_part->spec, capacity);
+		return -EFBIG;
+	}
+
+	stream_part->expected = expected;
+	recovery_stream.part_count++;
+	return 0;
+}
+
+static int recovery_mmc_stream_prepare(enum upload_target target, size_t size)
+{
+	const char *kernel_part = env_get("recovery_part_kernel") ?: "0#kernel";
+	const char *rootfs_part = env_get("recovery_part_rootfs") ?: "0#rootfs";
+	const char *data_part = env_get("recovery_part_data") ?: "0#rootfs_data";
+	const char *uboot_part = env_get("recovery_part_uboot");
+	size_t kernel_pad = env_get_hex("recovery_kernel_pad",
+					RECOVERY_KERNEL_PAD_SIZE);
+	ulong blksz;
+	int ret;
+
+	recovery_mmc_stream_reset();
+	recovery_stream_completed = false;
+
+	if (target == TARGET_FIRMWARE) {
+		if (size <= kernel_pad)
+			return -EINVAL;
+		ret = recovery_mmc_stream_add_part(kernel_part, kernel_pad);
+		if (ret)
+			goto err;
+		ret = recovery_mmc_stream_add_part(rootfs_part, size - kernel_pad);
+		if (ret)
+			goto err;
+		ret = recovery_mmc_check_part_size(data_part, 0);
+		if (ret)
+			goto err;
+	} else if (target == TARGET_UBOOT) {
+		if (!uboot_part || !*uboot_part) {
+			ret = -ENODEV;
+			goto err;
+		}
+		ret = recovery_mmc_stream_add_part(uboot_part, size);
+		if (ret)
+			goto err;
+	} else {
+		ret = -EINVAL;
+		goto err;
+	}
+
+	blksz = recovery_stream.parts[0].part.blksz ?:
+		recovery_stream.parts[0].desc->blksz;
+	recovery_stream.buf_size = ALIGN(RECOVERY_MMC_STREAM_CHUNK, blksz);
+	recovery_stream.buf = memalign(ARCH_DMA_MINALIGN,
+				       recovery_stream.buf_size);
+	if (!recovery_stream.buf) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	prog_phase = 1;
+	prog_done = 0;
+	prog_erase_done = 0;
+	prog_erase_total = (target == TARGET_FIRMWARE ? 3 : 1) *
+		RECOVERY_MMC_ERASE_PROGRESS_STEPS;
+	prog_write_done = 0;
+	prog_write_total = size;
+	prog_total = prog_erase_total + prog_write_total;
+
+	if (target == TARGET_FIRMWARE) {
+		ret = recovery_mmc_erase_part(kernel_part,
+					      recovery_runtime_status_leds, 0);
+		if (ret)
+			goto err;
+		ret = recovery_mmc_erase_part(rootfs_part,
+					      recovery_runtime_status_leds,
+					      RECOVERY_MMC_ERASE_PROGRESS_STEPS);
+		if (ret)
+			goto err;
+		ret = recovery_mmc_erase_part(data_part,
+					      recovery_runtime_status_leds,
+					      2 * RECOVERY_MMC_ERASE_PROGRESS_STEPS);
+	} else {
+		ret = recovery_mmc_erase_part(uboot_part,
+					      recovery_runtime_status_leds, 0);
+	}
+	if (ret)
+		goto err;
+
+	prog_phase = 2;
+	prog_erase_done = prog_erase_total;
+	prog_done = prog_erase_done;
+	recovery_stream.active = true;
+	printf("Destructive eMMC stream ready: erased %d target partition(s)\n",
+	       recovery_stream.part_count);
+	return 0;
+
+err:
+	prog_phase = -1;
+	recovery_mmc_stream_reset();
+	return ret;
+}
+
+static int recovery_mmc_stream_flush(void)
+{
+	struct recovery_mmc_stream_part *stream_part;
+	ulong blksz;
+	size_t write_len;
+	lbaint_t blk, blkcnt;
+
+	if (!recovery_stream.active || recovery_stream.error)
+		return recovery_stream.error ?: -EINVAL;
+	if (!recovery_stream.buf_used)
+		return 0;
+	if (recovery_stream.part_index >= recovery_stream.part_count)
+		return -EFBIG;
+
+	stream_part = &recovery_stream.parts[recovery_stream.part_index];
+	blksz = stream_part->part.blksz ?: stream_part->desc->blksz;
+	write_len = ALIGN(recovery_stream.buf_used, blksz);
+	if (write_len > recovery_stream.buf_used)
+		memset(recovery_stream.buf + recovery_stream.buf_used, 0,
+		       write_len - recovery_stream.buf_used);
+
+	blk = stream_part->part.start + stream_part->written / blksz;
+	blkcnt = write_len / blksz;
+	if (blk_dwrite(stream_part->desc, blk, blkcnt,
+		       recovery_stream.buf) != blkcnt) {
+		printf("Destructive stream write failed at '%s' block " LBAF "\n",
+		       stream_part->spec, blk);
+		recovery_stream.error = -EIO;
+		return -EIO;
+	}
+
+	stream_part->written += recovery_stream.buf_used;
+	prog_write_done += recovery_stream.buf_used;
+	prog_done = prog_erase_done + prog_write_done;
+	recovery_stream.buf_used = 0;
+	return 0;
+}
+
+static int recovery_mmc_stream_append(const void *data, size_t size)
+{
+	const u8 *src = data;
+
+	while (size) {
+		struct recovery_mmc_stream_part *stream_part;
+		size_t consumed, remaining, space, copy;
+		int ret;
+
+		if (recovery_stream.part_index >= recovery_stream.part_count)
+			return -EFBIG;
+		stream_part = &recovery_stream.parts[recovery_stream.part_index];
+		consumed = stream_part->written + recovery_stream.buf_used;
+		remaining = stream_part->expected - consumed;
+		space = recovery_stream.buf_size - recovery_stream.buf_used;
+		copy = min(size, min(remaining, space));
+		if (!copy)
+			return -EIO;
+
+		memcpy(recovery_stream.buf + recovery_stream.buf_used, src, copy);
+		recovery_stream.buf_used += copy;
+		src += copy;
+		size -= copy;
+		consumed += copy;
+
+		if (recovery_stream.buf_used == recovery_stream.buf_size ||
+		    consumed == stream_part->expected) {
+			ret = recovery_mmc_stream_flush();
+			if (ret)
+				return ret;
+			if (stream_part->written == stream_part->expected)
+				recovery_stream.part_index++;
+		}
+	}
+
+	return 0;
+}
+
+static int recovery_mmc_stream_finish(void)
+{
+	int ret;
+
+	ret = recovery_mmc_stream_flush();
+	if (ret)
+		return ret;
+	if (recovery_stream.part_index != recovery_stream.part_count ||
+	    prog_write_done != prog_write_total)
+		return -EIO;
+
+	return 0;
+}
+
 struct recovery_factory_part {
 	const char *spec;
 	lbaint_t start;
@@ -3213,9 +3456,10 @@ static void recovery_service_runtime(struct recovery_status_led_ctrl *status_led
 	struct udevice *udev = eth_get_current();
 	struct netif *netif = net_lwip_get_netif();
 
-	if (udev && eth_is_active(udev) && netif)
+	if (!recovery_in_http_callback && udev && eth_is_active(udev) && netif)
 		net_lwip_rx(udev, netif);
-	recovery_status_led_poll(status_leds);
+	if (status_leds)
+		recovery_status_led_poll(status_leds);
 	WATCHDOG_RESET();
 }
 
@@ -4007,6 +4251,8 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
 	prog_write_total = 0;
 	prog_reboot = 0;
 	current_force_recreate = false;
+	recovery_mmc_stream_reset();
+	recovery_stream_completed = false;
 
 	    /* Accept optional query parameters after the target path. */
     if (!strncmp(uri, "/upload/firmware", 16) && (uri[16] == '\0' || uri[16] == '?'))
@@ -4045,8 +4291,14 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
                                                  &tmpofs);
         ulong max = dts_max ? dts_max : RECOVERY_UPLOAD_MAX;
 
-        if (current_target == TARGET_FIRMWARE)
-            min = RECOVERY_MIN_FIRMWARE_SIZE;
+		if (current_target == TARGET_FIRMWARE) {
+			if (recovery_backend_is_mmc() &&
+			    env_get_yesno("recovery_stream") == 1)
+				min = env_get_hex("recovery_kernel_pad",
+						  RECOVERY_KERNEL_PAD_SIZE) + 1;
+			else
+				min = RECOVERY_MIN_FIRMWARE_SIZE;
+		}
         else if (current_target == TARGET_UBOOT &&
                  max > recovery_uboot_limit())
             max = recovery_uboot_limit();
@@ -4068,46 +4320,70 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
         }
     }
 
-    recv_total = content_len;
+	recv_total = content_len;
+	if (recovery_backend_is_mmc() &&
+	    env_get_yesno("recovery_stream") == 1 &&
+	    (current_target == TARGET_FIRMWARE ||
+	     current_target == TARGET_UBOOT)) {
+		int ret;
 
-    /*
-     * Pick a stable upload buffer:
-     * recovery_addr -> loadaddr -> CONFIG_SYS_LOAD_ADDR -> RAM fallback.
-     */
-    {
-        ulong ram_start = (ulong)gd->ram_base;
-        ulong ram_end = (ulong)gd->ram_base + (ulong)gd->ram_size;
-        ulong base = env_get_hex("recovery_addr", 0);
-        if (!base)
-            base = env_get_hex("loadaddr", 0);
-        if (!base)
-            base = CONFIG_SYS_LOAD_ADDR;
+		recovery_in_http_callback = true;
+		ret = recovery_mmc_stream_prepare(current_target, recv_total);
+		recovery_in_http_callback = false;
+		if (ret) {
+			printf("httpd: destructive stream preparation failed: %d\n", ret);
+			strlcpy(response_uri, "/fail.html", response_uri_len);
+			return ERR_IF;
+		}
+	}
 
-        /* Keep the buffer inside usable RAM. */
-        if (base < ram_start || (base + recv_total) > ram_end) {
-            ulong fallback = ram_start + 0x01000000UL;
-            if ((fallback >= ram_start) && ((fallback + recv_total) <= ram_end))
-                base = fallback;
-            else if ((ram_end - recv_total) > ram_start)
-                base = ram_end - recv_total;
-            else {
-                prog_phase = -1;
-                printf("httpd: no sufficient RAM for upload (%u bytes)\n", recv_total);
-                strlcpy(response_uri, "/fail.html", response_uri_len);
-                return ERR_MEM;
-            }
-        }
-        recv_base = (u8 *)base;
-    }
+	/*
+	 * Pick a stable upload buffer:
+	 * recovery_addr -> loadaddr -> CONFIG_SYS_LOAD_ADDR -> RAM fallback.
+	 */
+	if (!recovery_stream.active) {
+		ulong ram_start = (ulong)gd->ram_base;
+		ulong ram_end = (ulong)gd->ram_base + (ulong)gd->ram_size;
+		ulong base = env_get_hex("recovery_addr", 0);
+
+		if (!base)
+			base = env_get_hex("loadaddr", 0);
+		if (!base)
+			base = CONFIG_SYS_LOAD_ADDR;
+
+		/* Keep the buffer inside usable RAM. */
+		if (base < ram_start || (base + recv_total) > ram_end) {
+			ulong fallback = ram_start + 0x01000000UL;
+
+			if (fallback >= ram_start &&
+			    fallback + recv_total <= ram_end) {
+				base = fallback;
+			} else if (ram_end - recv_total > ram_start) {
+				base = ram_end - recv_total;
+			} else {
+				prog_phase = -1;
+				printf("httpd: no sufficient RAM for upload (%u bytes)\n",
+				       recv_total);
+				strlcpy(response_uri, "/fail.html",
+					response_uri_len);
+				return ERR_MEM;
+			}
+		}
+		recv_base = (u8 *)base;
+	}
 
     post_ok = 1;
     /* Leave response_uri untouched here so the POST can complete normally. */
     const char *tname = current_target == TARGET_FIRMWARE ? "firmware" :
                         current_target == TARGET_UBOOT ? "uboot" :
                         "repartition";
-    printf("httpd: accepting upload of %u bytes for %s to 0x%08lx%s\n",
-           recv_total, tname, (ulong)recv_base,
-           current_force_recreate ? " (force recreate)" : "");
+	if (recovery_stream.active)
+		printf("httpd: accepting destructive streaming upload of %u bytes for %s\n",
+		       recv_total, tname);
+	else
+		printf("httpd: accepting upload of %u bytes for %s to 0x%08lx%s\n",
+		       recv_total, tname, (ulong)recv_base,
+		       current_force_recreate ? " (force recreate)" : "");
     return ERR_OK;
 }
 
@@ -4121,15 +4397,24 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p)
 		return ERR_ARG;
 	}
 
-	/* Copy request payload into RAM and defer flash work to the main loop. */
+	/* Stream directly to eMMC when enabled; otherwise retain the RAM path. */
 	for (q = p; q != NULL; q = q->next) {
-        size_t avail = recv_total - recv_off;
-        size_t clen = q->len;
-	        if (clen > avail)
-	            clen = avail;
-	        memcpy(recv_base + recv_off, q->payload, clen);
-	        recv_off += clen;
-    }
+		size_t avail = recv_total - recv_off;
+		size_t clen = q->len;
+
+		if (clen > avail)
+			clen = avail;
+		if (recovery_stream.active) {
+			if (recovery_mmc_stream_append(q->payload, clen)) {
+				post_ok = 0;
+				pbuf_free(p);
+				return ERR_IF;
+			}
+		} else {
+			memcpy(recv_base + recv_off, q->payload, clen);
+		}
+		recv_off += clen;
+	}
     recved = p->tot_len;
     pbuf_free(p);
 
@@ -4147,8 +4432,20 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p)
 
 void httpd_post_finished(void *connection, char *response_uri, u16_t response_uri_len)
 {
-    (void)connection;
-    printf("httpd: post finished, %u/%u bytes received\n", recv_off, recv_total);
+	(void)connection;
+	if (post_ok && recovery_stream.active && recv_off == recv_total) {
+		if (recovery_mmc_stream_finish()) {
+			post_ok = 0;
+			prog_phase = -1;
+		} else {
+			recovery_stream_completed = true;
+			prog_phase = 3;
+			prog_write_done = prog_write_total;
+			prog_done = prog_total;
+			prog_reboot = 1;
+		}
+	}
+	printf("httpd: post finished, %u/%u bytes received\n", recv_off, recv_total);
     /* Tell httpd which page to return after POST (keep user on main page) */
     if (post_ok && recv_total && (recv_off >= recv_total))
         strlcpy(response_uri, "/ok", response_uri_len);
@@ -4159,8 +4456,14 @@ void httpd_post_finished(void *connection, char *response_uri, u16_t response_ur
      * Delay flashing slightly so the browser can finish receiving the POST
      * response before erase/write work blocks the network loop.
      */
-    if (post_ok && recv_total && (recv_off >= recv_total))
-        sys_timeout(FLASH_START_DELAY_MS, post_delay_cb, NULL);
+	if (post_ok && recv_total && recv_off >= recv_total) {
+		if (recovery_stream_completed)
+			sys_timeout(REBOOT_DELAY_MS, reboot_delay_cb, NULL);
+		else
+			sys_timeout(FLASH_START_DELAY_MS, post_delay_cb, NULL);
+	} else if (recovery_stream.active) {
+		recovery_mmc_stream_reset();
+	}
 }
 
 static int flash_image(struct recovery_status_led_ctrl *status_leds)
@@ -4402,6 +4705,9 @@ int run_http_recovery(void)
 	recovery_board_http_acl(true);
 
 	recv_off = recv_total = 0;
+	recovery_mmc_stream_reset();
+	recovery_stream_completed = false;
+	recovery_runtime_status_leds = &status_leds;
 	post_ok = 0;
 	upload_done = 0;
 	flash_request = 0;
@@ -4512,6 +4818,8 @@ int run_http_recovery(void)
 	rc = 0;
 
 out:
+	recovery_runtime_status_leds = NULL;
+	recovery_mmc_stream_reset();
 	recovery_dhcp_server_stop(&dhcp);
 	net_lwip_set_recovery_dhcp_hook(NULL, NULL);
 	if (netif)

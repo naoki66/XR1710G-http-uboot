@@ -227,13 +227,13 @@ button:disabled{opacity:.6;cursor:default}
     <p class="eyebrow">SBE1V1K Recovery</p>
     <h1>Upload firmware or chainloader</h1>
     <p class="lead">Recovery endpoint: <strong>192.168.255.1</strong></p>
-    <p class="note">`firmware` fully erases eMMC `kernel`, `rootfs`, and `rootfs_data` before writing; `uboot` fully erases `chainloader` before writing its raw FIT.</p>
+    <p class="note">Uploads are destructive: target partitions are erased before the request body is streamed directly to eMMC. An interrupted or invalid upload may leave the device unbootable.</p>
 
     <div class="targets">
       <div class="target active" id="card-firmware">
         <h2>firmware</h2>
         <p>OpenWrt/QSDK sysupgrade image</p>
-        <p>Must be at least 1024 KiB</p>
+        <p>Must be larger than the 32 MiB kernel area and no more than 1 GiB</p>
       </div>
       <div class="target" id="card-uboot">
         <h2>uboot</h2>
@@ -457,9 +457,9 @@ async function upload() {
   var target = document.getElementById("t").value;
   var forceRecreate =
     target === "firmware" && document.getElementById("force-recreate").checked;
-  var minFirmware = 1024 * 1024;
+  var minFirmware = 32 * 1024 * 1024 + 1;
+  var maxFirmware = 1024 * 1024 * 1024;
   var maxUboot = 4 * 1024 * 1024;
-  var payload;
   var xhr = new XMLHttpRequest();
   if (!file) {
     log("No file selected.");
@@ -467,7 +467,12 @@ async function upload() {
   }
 
   if (target === "firmware" && file.size < minFirmware) {
-    log("Rejected: firmware image must be at least 1024 KiB.");
+    log("Rejected: firmware image must be larger than the 32 MiB kernel area.");
+    return;
+  }
+
+  if (target === "firmware" && file.size > maxFirmware) {
+    log("Rejected: firmware image must not exceed 1 GiB.");
     return;
   }
 
@@ -488,15 +493,6 @@ async function upload() {
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
-  }
-
-  log("Preparing upload buffer...");
-  try {
-    payload = await file.arrayBuffer();
-  } catch (err) {
-    log("Failed to read file: " + err);
-    setControlsDisabled(false);
-    return;
   }
 
   xhr.upload.addEventListener("progress", function(ev) {
@@ -538,7 +534,7 @@ async function upload() {
   xhr.open("POST", "/upload/" + target + (forceRecreate ? "?recreate=1" : ""),
            true);
   xhr.setRequestHeader("Content-Type", "application/octet-stream");
-  xhr.send(payload);
+  xhr.send(file);
 }
 
 function repartition() {

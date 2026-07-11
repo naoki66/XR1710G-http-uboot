@@ -129,16 +129,21 @@ The recovery action:
 SBE1V1K is an eMMC/GPT device. Recovery writes raw GPT partitions only; it must
 not format, create, resize, or write UBI volumes on this board.
 
-Every recovery image update erases the complete target partition before
-writing any payload. A firmware upload fully erases `kernel`, `rootfs`, and
-`rootfs_data`, then writes the kernel FIT and SquashFS payload. A chainloader
-upload fully erases `chainloader`, then writes the raw chainloader FIT.
+Every recovery image update is intentionally destructive. Before accepting the
+request body, a firmware upload fully erases `kernel`, `rootfs`, and
+`rootfs_data`; a chainloader upload fully erases `chainloader`. The HTTP body is
+then written directly to eMMC through a fixed 1 MiB RAM buffer. Recovery does
+not retain or validate the complete upload before writing, so an interrupted or
+incorrect upload can leave the target unbootable.
 Recovery uses exact eMMC erase/TRIM when the device and partition alignment
 allow it. Otherwise, it zero-fills every logical block in the partition so an
 erase-group rounding operation cannot overwrite an adjacent GPT partition.
-The HTTP firmware upload is capped at 128 MiB. This covers the combined
-OpenWrt image while keeping the buffer at `0x60000000` below U-Boot's runtime
-and 256 MiB malloc area; GPT partition capacity is not a safe RAM upload limit.
+The firmware stream uses the QSDK/OpenWrt SBE1V1K raw sysupgrade layout:
+`recovery_kernel_pad` bytes (32 MiB by default) go to `kernel`, and all
+remaining bytes go to `rootfs`. The default upload cap is 1 GiB. This design
+keeps the existing GPT and boot command unchanged; A/B was not selected because
+the required update policy is erase-first and does not require rollback or slot
+selection.
 
 The installed stock U-Boot environment is equivalent to:
 
