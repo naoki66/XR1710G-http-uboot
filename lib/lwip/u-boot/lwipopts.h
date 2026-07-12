@@ -205,6 +205,8 @@
 #define LWIP_HTTPD_SUPPORT_POST                 1
 #define LWIP_HTTPD_POST_MANUAL_WND              1
 #define LWIP_HTTPD_CUSTOM_FILES                 1
+#define LWIP_HTTPD_DYNAMIC_FILE_READ             1
+#define LWIP_HTTPD_FILE_EXTENSION                1
 #define LWIP_HTTPD_CGI                          0
 #define LWIP_HTTPD_SSI                          0
 #define LWIP_HTTPD_MAX_REQ_LENGTH               16384

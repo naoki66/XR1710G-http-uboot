@@ -101,6 +101,7 @@ static bool recovery_board_is_sbe1v1k(void)
 #define RECOVERY_KERNEL_PAD_SIZE    (7000 * 1024UL)
 #define RECOVERY_MMC_WRITE_CHUNK    (1024 * 1024UL)
 #define RECOVERY_MMC_STREAM_CHUNK   (1024 * 1024UL)
+#define RECOVERY_MMC_BACKUP_CHUNK   (64 * 1024UL)
 #define RECOVERY_MMC_ERASE_CHUNK    (32 * 1024 * 1024ULL)
 #define RECOVERY_MMC_ERASE_PROGRESS_STEPS 1000U
 #define RECOVERY_SQUASHFS_MAGIC      0x73717368U
@@ -172,6 +173,24 @@ static bool recovery_board_is_sbe1v1k(void)
 #define RECOVERY_ENV_CRC_SIZE   4
 #define RECOVERY_SBE1V1K_REPARTITION_TOKEN "SBE1V1K_REPARTITION"
 #define RECOVERY_SBE1V1K_CHAINLOADER_PART "0#chainloader"
+#define RECOVERY_PARTITIONS_JSON_MAX (16 * 1024UL)
+#define RECOVERY_BACKUP_MAGIC         0x52424b50U
+
+struct recovery_backup_file {
+	u32 magic;
+	struct blk_desc *desc;
+	lbaint_t next_lba;
+	lbaint_t blocks_left;
+	ulong blksz;
+	u8 *cache;
+	size_t cache_capacity;
+	size_t cache_len;
+	size_t cache_off;
+	char header[320];
+	size_t header_len;
+	size_t header_off;
+	bool active_counted;
+};
 
 static u8 *recv_base;
 static u32 recv_off;
@@ -182,6 +201,7 @@ static bool recovery_in_http_callback;
 static struct recovery_status_led_ctrl *recovery_runtime_status_leds;
 static int flash_request;
 static volatile int reboot_request;
+static unsigned int recovery_backup_active;
 /* Progress for /status polling */
 static volatile u32 prog_total; /* combined total for backward compat */
 static volatile u32 prog_done;  /* combined done for backward compat */
@@ -4094,131 +4114,477 @@ static unsigned long recovery_calc_target_max(enum upload_target tgt,
 
 /* Only dynamic endpoints here; static files come from fsdata */
 
-/* lwIP httpd custom file hooks: serve only dynamic endpoints; static files via fsdata */
+static void recovery_http_static_file(struct fs_file *file, const char *data,
+				      int len)
+{
+	file->data = data;
+	file->len = len;
+	/* Dynamic reads are enabled for backup streams. Static data is complete. */
+	file->index = len;
+	file->pextension = NULL;
+	file->flags = FS_FILE_FLAGS_HEADER_INCLUDED;
+}
+
+static int recovery_http_error(struct fs_file *file, const char *status,
+			       const char *message)
+{
+	static char page_error[384];
+	int body_len, header_len;
+
+	body_len = strlen(message);
+	header_len = snprintf(page_error, sizeof(page_error),
+			      "HTTP/1.0 %s\r\n"
+			      "Content-Type: text/plain\r\n"
+			      "Cache-Control: no-store\r\n"
+			      "Content-Length: %d\r\n"
+			      "Connection: close\r\n\r\n%s",
+			      status, body_len, message);
+	if (header_len < 0 || header_len >= sizeof(page_error))
+		return 0;
+
+	recovery_http_static_file(file, page_error, header_len);
+	return 1;
+}
+
+static void recovery_partition_display_name(const char *name, char *safe,
+					    size_t safe_len)
+{
+	size_t i;
+
+	if (!safe_len)
+		return;
+
+	for (i = 0; name && name[i] && i + 1 < safe_len; i++) {
+		unsigned char c = name[i];
+
+		safe[i] = c >= 0x20 && c <= 0x7e && c != '"' && c != '\\' ?
+			  c : '_';
+	}
+	safe[i] = '\0';
+}
+
+static void recovery_partition_filename(const char *name, char *safe,
+					size_t safe_len)
+{
+	size_t i;
+
+	if (!safe_len)
+		return;
+
+	for (i = 0; name && name[i] && i + 1 < safe_len; i++) {
+		unsigned char c = name[i];
+
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		    (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.')
+			safe[i] = c;
+		else
+			safe[i] = '_';
+	}
+	safe[i] = '\0';
+}
+
+static int recovery_open_partitions(struct fs_file *file)
+{
+	static char page[RECOVERY_PARTITIONS_JSON_MAX + 256];
+	static char json[RECOVERY_PARTITIONS_JSON_MAX];
+	struct blk_desc *desc;
+	size_t off = 0;
+	int count = 0;
+	int header_len;
+	int ret;
+	int p;
+
+	ret = blk_get_device_by_str("mmc", recovery_mmcdev(), &desc);
+	if (ret < 0)
+		return recovery_http_error(file, "503 Service Unavailable",
+					   "eMMC device is unavailable.\n");
+
+	off += snprintf(json + off, sizeof(json) - off, "{\"partitions\":[");
+	for (p = 1; p <= MAX_SEARCH_PARTITIONS; p++) {
+		struct disk_partition part;
+		char item[320];
+		char name[PART_NAME_LEN + 1];
+		unsigned long long bytes;
+		int item_len;
+
+		ret = part_get_info(desc, p, &part);
+		if (ret || !part.size)
+			continue;
+
+		recovery_partition_display_name((const char *)part.name, name,
+						sizeof(name));
+		bytes = (unsigned long long)part.size *
+			(unsigned long long)(part.blksz ?: desc->blksz);
+		item_len = snprintf(item, sizeof(item),
+				    "%s{\"number\":%d,\"name\":\"%s\","
+				    "\"start\":%llu,\"blocks\":%llu,"
+				    "\"block_size\":%lu,\"size\":%llu}",
+				    count ? "," : "", p, name,
+				    (unsigned long long)part.start,
+				    (unsigned long long)part.size,
+				    part.blksz ?: desc->blksz, bytes);
+		if (item_len < 0 || item_len >= sizeof(item) ||
+		    off + item_len + sizeof("]}\n") > sizeof(json))
+			break;
+
+		memcpy(json + off, item, item_len);
+		off += item_len;
+		count++;
+	}
+
+	memcpy(json + off, "]}\n", sizeof("]}\n"));
+	off += sizeof("]}\n") - 1;
+	header_len = snprintf(page, sizeof(page),
+			      "HTTP/1.0 200 OK\r\n"
+			      "Content-Type: application/json\r\n"
+			      "Cache-Control: no-store\r\n"
+			      "Content-Length: %lu\r\n"
+			      "Connection: close\r\n\r\n",
+			      (ulong)off);
+	if (header_len < 0 || header_len + off > sizeof(page))
+		return 0;
+
+	memcpy(page + header_len, json, off);
+	recovery_http_static_file(file, page, header_len + off);
+	return 1;
+}
+
+static int recovery_backup_partition_number(const char *path)
+{
+	const char *prefix = "backup/partition-";
+	unsigned int number = 0;
+
+	if (strncmp(path, prefix, strlen(prefix)))
+		return -ENOENT;
+
+	path += strlen(prefix);
+	if (*path < '0' || *path > '9')
+		return -EINVAL;
+	while (*path >= '0' && *path <= '9') {
+		number = number * 10 + (*path++ - '0');
+		if (number > MAX_SEARCH_PARTITIONS)
+			return -EINVAL;
+	}
+	if (strcmp(path, ".bin") || !number)
+		return -EINVAL;
+
+	return number;
+}
+
+static int recovery_open_backup(struct fs_file *file, const char *path)
+{
+	struct recovery_backup_file *backup;
+	struct disk_partition part;
+	struct blk_desc *desc;
+	char filename[PART_NAME_LEN + 1];
+	unsigned long long bytes;
+	size_t cache_capacity;
+	int number;
+	int ret;
+
+	number = recovery_backup_partition_number(path);
+	if (number == -ENOENT)
+		return 0;
+	if (number < 0)
+		return recovery_http_error(file, "400 Bad Request",
+					   "Invalid partition backup path.\n");
+	if ((prog_phase > 0 && prog_phase < 3) || recovery_stream.active ||
+	    flash_request || prog_reboot || reboot_request)
+		return recovery_http_error(file, "409 Conflict",
+					   "A destructive storage operation is active.\n");
+
+	ret = blk_get_device_by_str("mmc", recovery_mmcdev(), &desc);
+	if (ret < 0)
+		return recovery_http_error(file, "503 Service Unavailable",
+					   "eMMC device is unavailable.\n");
+	ret = part_get_info(desc, number, &part);
+	if (ret || !part.size)
+		return recovery_http_error(file, "404 Not Found",
+					   "Partition does not exist.\n");
+
+	backup = calloc(1, sizeof(*backup));
+	if (!backup)
+		return recovery_http_error(file, "503 Service Unavailable",
+					   "Cannot allocate backup state.\n");
+
+	backup->blksz = part.blksz ?: desc->blksz;
+	if (!backup->blksz) {
+		free(backup);
+		return recovery_http_error(file, "500 Internal Server Error",
+					   "Invalid eMMC block size.\n");
+	}
+	cache_capacity = RECOVERY_MMC_BACKUP_CHUNK / backup->blksz *
+			 backup->blksz;
+	if (!cache_capacity) {
+		free(backup);
+		return recovery_http_error(file, "500 Internal Server Error",
+					   "eMMC block size exceeds backup buffer.\n");
+	}
+	backup->cache = memalign(ARCH_DMA_MINALIGN, cache_capacity);
+	if (!backup->cache) {
+		free(backup);
+		return recovery_http_error(file, "503 Service Unavailable",
+					   "Cannot allocate backup buffer.\n");
+	}
+
+	recovery_partition_filename((const char *)part.name, filename,
+				    sizeof(filename));
+	bytes = (unsigned long long)part.size * backup->blksz;
+	backup->header_len = snprintf(backup->header, sizeof(backup->header),
+				      "HTTP/1.0 200 OK\r\n"
+				      "Content-Type: application/octet-stream\r\n"
+				      "Content-Disposition: attachment; "
+				      "filename=\"sbe1v1k-p%02d-%s.img\"\r\n"
+				      "Cache-Control: no-store\r\n"
+				      "Content-Length: %llu\r\n"
+				      "Connection: close\r\n\r\n",
+				      number, filename[0] ? filename : "partition",
+				      bytes);
+	if (backup->header_len >= sizeof(backup->header)) {
+		free(backup->cache);
+		free(backup);
+		return 0;
+	}
+
+	backup->magic = RECOVERY_BACKUP_MAGIC;
+	backup->desc = desc;
+	backup->next_lba = part.start;
+	backup->blocks_left = part.size;
+	backup->cache_capacity = cache_capacity;
+	backup->active_counted = true;
+	recovery_backup_active++;
+
+	file->data = NULL;
+	file->len = INT_MAX;
+	file->index = 0;
+	file->pextension = (fs_file_extension *)backup;
+	file->flags = FS_FILE_FLAGS_HEADER_INCLUDED;
+	printf("httpd: streaming backup of partition %d '%s' (%llu bytes)\n",
+	       number, (const char *)part.name, bytes);
+	return 1;
+}
+
+static int recovery_http_json(struct fs_file *file, char *page,
+			      size_t page_size, const char *json, int json_len)
+{
+	int header_len;
+	size_t body_len;
+
+	if (json_len < 0)
+		return 0;
+	if ((size_t)json_len >= page_size)
+		return 0;
+
+	header_len = snprintf(page, page_size,
+			      "HTTP/1.0 200 OK\r\n"
+			      "Content-Type: application/json\r\n"
+			      "Cache-Control: no-store\r\n"
+			      "Content-Length: %d\r\n"
+			      "Connection: close\r\n\r\n",
+			      json_len);
+	if (header_len < 0 || (size_t)header_len >= page_size)
+		return 0;
+	if ((size_t)json_len > page_size - header_len)
+		return 0;
+
+	body_len = json_len;
+	memcpy(page + header_len, json, body_len);
+	recovery_http_static_file(file, page, header_len + body_len);
+	return 1;
+}
+
+static int recovery_open_status(struct fs_file *file)
+{
+	static char page[512];
+	char json[256];
+	int json_len;
+
+	json_len = snprintf(json, sizeof(json),
+			    "{\"in_progress\":%d,\"done\":%u,\"total\":%u,"
+			    "\"erase_done\":%u,\"erase_total\":%u,"
+			    "\"write_done\":%u,\"write_total\":%u,"
+			    "\"ok\":%d,\"error\":%d,\"phase\":%d,"
+			    "\"reboot\":%d}\n",
+			    prog_phase > 0 && prog_phase < 3,
+			    (unsigned int)prog_done, (unsigned int)prog_total,
+			    (unsigned int)prog_erase_done,
+			    (unsigned int)prog_erase_total,
+			    (unsigned int)prog_write_done,
+			    (unsigned int)prog_write_total,
+			    prog_phase == 3, prog_phase == -1, prog_phase,
+			    prog_reboot);
+	if (json_len < 0)
+		return 0;
+	if ((size_t)json_len >= sizeof(json))
+		json_len = sizeof(json) - 1;
+
+	return recovery_http_json(file, page, sizeof(page), json, json_len);
+}
+
+static int recovery_open_about(struct fs_file *file)
+{
+	static char page[384];
+	char json[256];
+	int json_len;
+
+#ifdef U_BOOT_DATE
+	json_len = snprintf(json, sizeof(json),
+			    "{\"u_boot\":\"%s (%s - %s %s)\"}\n",
+			    U_BOOT_VERSION, U_BOOT_DATE, U_BOOT_TIME,
+			    U_BOOT_TZ);
+#else
+	json_len = snprintf(json, sizeof(json),
+			    "{\"u_boot\":\"%s\"}\n", U_BOOT_VERSION);
+#endif
+	if (json_len < 0)
+		return 0;
+	if ((size_t)json_len >= sizeof(json))
+		json_len = sizeof(json) - 1;
+
+	return recovery_http_json(file, page, sizeof(page), json, json_len);
+}
+
+/* lwIP httpd custom file hooks; static files continue to use fsdata. */
 int fs_open_custom(struct fs_file *file, const char *name)
 {
-    const char *p;
-    if (!file || !name)
-        return 0;
+	static const char page_ok[] =
+		"HTTP/1.0 200 OK\r\n"
+		"Content-Type: text/plain\r\n"
+		"Cache-Control: no-store\r\n"
+		"Content-Length: 2\r\n"
+		"Connection: close\r\n\r\n"
+		"OK";
+	const char *p;
 
-    /* Normalize leading slash to make httpd default filenames work */
-    p = name;
-    if (*p == '/')
-        p++;
+	if (!file || !name)
+		return 0;
 
+	memset(file, 0, sizeof(*file));
+	p = *name == '/' ? name + 1 : name;
 
-	    if (!strcmp(p, "status")) {
-        static char page_status[512];
-        char json[256];
-        int ok = (prog_phase == 3);
-        int err = (prog_phase == -1);
-        int json_len = snprintf(json, sizeof(json),
-                                "{\"in_progress\":%d,\"done\":%u,\"total\":%u,\"erase_done\":%u,\"erase_total\":%u,\"write_done\":%u,\"write_total\":%u,\"ok\":%d,\"error\":%d,\"phase\":%d,\"reboot\":%d}\n",
-                                prog_phase > 0 && prog_phase < 3,
-                                (unsigned)prog_done, (unsigned)prog_total,
-                                (unsigned)prog_erase_done, (unsigned)prog_erase_total,
-                                (unsigned)prog_write_done, (unsigned)prog_write_total,
-                                ok, err, prog_phase, prog_reboot);
-        if (json_len < 0)
-            return 0;
-        if (json_len >= (int)sizeof(json))
-            json_len = (int)sizeof(json) - 1;
+	if (!strcmp(p, "partitions"))
+		return recovery_open_partitions(file);
+	if (!strncmp(p, "backup/", 7))
+		return recovery_open_backup(file, p);
+	if (!strcmp(p, "status"))
+		return recovery_open_status(file);
+	if (!strcmp(p, "about"))
+		return recovery_open_about(file);
+	if (!strcmp(p, "ok")) {
+		recovery_http_static_file(file, page_ok, sizeof(page_ok) - 1);
+		return 1;
+	}
 
-        /* Build header with Content-Length for robustness */
-        int hdr_len = snprintf(page_status, sizeof(page_status),
-                               "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-                               json_len);
-        if (hdr_len < 0)
-            return 0;
-        if ((size_t)hdr_len >= sizeof(page_status))
-            hdr_len = sizeof(page_status) - 1;
-        /* Append body */
-        size_t space = sizeof(page_status) - hdr_len - 1;
-        size_t body_len = (json_len > (int)space) ? space : (size_t)json_len;
-        memcpy(page_status + hdr_len, json, body_len);
-        page_status[hdr_len + body_len] = '\0';
-
-        file->data = page_status;
-        file->len = hdr_len + body_len; /* actual header + body written */
-        file->index = 0;
-	        file->flags = FS_FILE_FLAGS_HEADER_INCLUDED; /* header already included */
-	        return 1;
-	    }
-	    else if (!strcmp(p, "ok")) {
-	        static const char page_ok[] =
-	            "HTTP/1.0 200 OK\r\n"
-	            "Content-Type: text/plain\r\n"
-	            "Cache-Control: no-store\r\n"
-	            "Content-Length: 2\r\n"
-	            "Connection: close\r\n"
-	            "\r\n"
-	            "OK";
-
-	        file->data = page_ok;
-	        file->len = sizeof(page_ok) - 1;
-	        file->index = 0;
-	        file->flags = FS_FILE_FLAGS_HEADER_INCLUDED;
-	        return 1;
-	    }
-	    else if (!strcmp(p, "about")) {
-        static char page_about[384];
-        char json[256];
-        int json_len =
-#ifdef U_BOOT_DATE
-            snprintf(json, sizeof(json),
-                     "{\"u_boot\":\"%s (%s - %s %s)\"}\n",
-                     U_BOOT_VERSION, U_BOOT_DATE, U_BOOT_TIME, U_BOOT_TZ);
-#else
-            snprintf(json, sizeof(json),
-                     "{\"u_boot\":\"%s\"}\n",
-                     U_BOOT_VERSION);
-#endif
-        if (json_len < 0)
-            return 0;
-        if (json_len >= (int)sizeof(json))
-            json_len = (int)sizeof(json) - 1;
-
-        int hdr_len = snprintf(page_about, sizeof(page_about),
-                               "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-                               json_len);
-        if (hdr_len < 0)
-            return 0;
-        if ((size_t)hdr_len >= sizeof(page_about))
-            hdr_len = sizeof(page_about) - 1;
-        size_t space = sizeof(page_about) - hdr_len - 1;
-        size_t body_len = (json_len > (int)space) ? space : (size_t)json_len;
-        memcpy(page_about + hdr_len, json, body_len);
-        page_about[hdr_len + body_len] = '\0';
-
-        file->data = page_about;
-        file->len = hdr_len + body_len;
-        file->index = 0;
-        file->flags = FS_FILE_FLAGS_HEADER_INCLUDED;
-        return 1;
-    }
-    /* Do not intercept favicon/index/ok/fail: served by fsdata */
-    /* let fsdata handle others */
-    return 0;
+	return 0;
 }
 
 void fs_close_custom(struct fs_file *file)
 {
-    (void)file;
+	struct recovery_backup_file *backup;
+
+	if (!file || !file->pextension)
+		return;
+
+	backup = (struct recovery_backup_file *)file->pextension;
+	if (backup->magic != RECOVERY_BACKUP_MAGIC)
+		return;
+
+	backup->magic = 0;
+	if (backup->active_counted && recovery_backup_active)
+		recovery_backup_active--;
+	free(backup->cache);
+	free(backup);
+	file->pextension = NULL;
+}
+
+static int recovery_read_backup(struct recovery_backup_file *backup,
+				char *buffer, int count)
+{
+	int copied = 0;
+
+	while (copied < count) {
+		size_t available;
+		size_t todo;
+
+		if (backup->header_off < backup->header_len) {
+			available = backup->header_len - backup->header_off;
+			todo = min_t(size_t, available, count - copied);
+			memcpy(buffer + copied,
+			       backup->header + backup->header_off, todo);
+			backup->header_off += todo;
+			copied += todo;
+			continue;
+		}
+
+		if (backup->cache_off >= backup->cache_len) {
+			lbaint_t blocks;
+
+			if (!backup->blocks_left)
+				break;
+			blocks = backup->cache_capacity / backup->blksz;
+			if (blocks > backup->blocks_left)
+				blocks = backup->blocks_left;
+			if (blk_dread(backup->desc, backup->next_lba, blocks,
+				      backup->cache) != blocks) {
+				printf("httpd: eMMC backup read failed at block "
+				       LBAF "\n", backup->next_lba);
+				backup->blocks_left = 0;
+				backup->cache_len = 0;
+				break;
+			}
+
+			backup->next_lba += blocks;
+			backup->blocks_left -= blocks;
+			backup->cache_len = blocks * backup->blksz;
+			backup->cache_off = 0;
+			recovery_watchdog_poll();
+		}
+
+		available = backup->cache_len - backup->cache_off;
+		todo = min_t(size_t, available, count - copied);
+		memcpy(buffer + copied, backup->cache + backup->cache_off, todo);
+		backup->cache_off += todo;
+		copied += todo;
+	}
+
+	return copied ? copied : FS_READ_EOF;
 }
 
 int fs_read_custom(struct fs_file *file, char *buffer, int count)
 {
-    u32_t left;
-    if (!file || !buffer || count <= 0)
-        return FS_READ_EOF;
-    left = file->len - file->index;
-    if (left <= 0)
-        return FS_READ_EOF;
-    if ((u32_t)count > left)
-        count = left;
-    memcpy(buffer, file->data + file->index, count);
-    file->index += count;
-    return count;
+	struct recovery_backup_file *backup;
+	u32_t left;
+	int read;
+	bool finished;
+
+	if (!file || !buffer || count <= 0)
+		return FS_READ_EOF;
+
+	backup = (struct recovery_backup_file *)file->pextension;
+	if (backup && backup->magic == RECOVERY_BACKUP_MAGIC) {
+		read = recovery_read_backup(backup, buffer, count);
+		finished = backup->header_off >= backup->header_len &&
+			   !backup->blocks_left &&
+			   backup->cache_off >= backup->cache_len;
+		if (read < 0 || finished) {
+			file->index = file->len;
+		} else if (file->index > file->len - read - 1) {
+			/* Keep lwIP's int-sized cursor live for partitions over 2 GiB. */
+			file->index = 0;
+		} else {
+			file->index += read;
+		}
+		return read;
+	}
+
+	left = file->len - file->index;
+	if (left <= 0)
+		return FS_READ_EOF;
+	if ((u32_t)count > left)
+		count = left;
+	memcpy(buffer, file->data + file->index, count);
+	file->index += count;
+	return count;
 }
 
 /* bytes_left for custom files is handled by fs_read_custom + file->index; */
@@ -4234,10 +4600,16 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
      * images that are much larger than a typical lwIP POST body and manual
      * window updates avoid over-optimistic receive windows.
      */
-    if (post_auto_wnd)
-        *post_auto_wnd = 0;
+	if (post_auto_wnd)
+		*post_auto_wnd = 0;
+	post_ok = 0;
+	if (recovery_backup_active) {
+		printf("httpd: rejecting destructive operation while %u backup stream(s) are active\n",
+		       recovery_backup_active);
+		strlcpy(response_uri, "/fail.html", response_uri_len);
+		return ERR_USE;
+	}
 
-    post_ok = 0;
     upload_done = 0;
     recv_off = 0;
     recv_total = 0;

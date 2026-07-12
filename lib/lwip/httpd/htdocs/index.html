@@ -35,7 +35,7 @@ body{
   background:var(--page);
   font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
 }
-button,input{font:inherit;letter-spacing:0}
+button,input,select{font:inherit;letter-spacing:0}
 button{touch-action:manipulation}
 .app{
   min-height:100svh;
@@ -173,7 +173,7 @@ button{touch-action:manipulation}
 .fact-label{display:block;margin-bottom:4px;color:var(--muted);font-size:11px;font-weight:680}
 .fact-value{display:block;overflow-wrap:anywhere;font-size:13px;font-weight:700}
 .workspace{padding:29px 32px 31px}
-.upload-view,.layout-view{animation:view-in .2s ease both}
+.upload-view,.layout-view,.backup-view{animation:view-in .2s ease both}
 .file-label{display:block;margin-bottom:9px;font-size:13px;font-weight:710}
 .file-input{display:none}
 .file-picker{
@@ -300,6 +300,23 @@ button{touch-action:manipulation}
 }
 .confirm-input:focus{border-color:var(--danger);box-shadow:0 0 0 3px rgba(166,61,53,.09)}
 .confirm-input:disabled{opacity:.55}
+.backup-label{display:block;margin-bottom:9px;font-size:13px;font-weight:710}
+.partition-select{
+  width:100%;
+  min-height:52px;
+  padding:0 42px 0 14px;
+  border:1px solid var(--line-strong);
+  border-radius:7px;
+  color:var(--ink);
+  background:#ffffff;
+  outline:none;
+  cursor:pointer;
+}
+.partition-select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(201,79,45,.09)}
+.partition-select:disabled{cursor:default;color:var(--muted);background:var(--soft)}
+.backup-help{min-height:20px;margin:8px 0 0;color:var(--muted);font-size:12px}
+.backup-help.error{color:var(--danger)}
+.backup-help.ok{color:var(--green)}
 .footer{padding:14px 3px 0;color:#7b8589;font-size:11px;text-align:right}
 [hidden]{display:none!important}
 @keyframes page-in{from{transform:translateY(6px)}to{transform:none}}
@@ -311,7 +328,7 @@ button{touch-action:manipulation}
   .brand{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 3px 13px}
   .online{margin:0}
   .nav-label{display:none}
-  .nav{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding-top:12px}
+  .nav{grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding-top:12px}
   .nav-button{justify-content:center;padding:0 7px;font-size:12px;text-align:center}
   .nav-mark{display:none}
   .side-meta{display:none}
@@ -359,6 +376,7 @@ button{touch-action:manipulation}
       <button class="nav-button active" type="button" data-view="firmware" aria-current="page"><span class="nav-mark"></span>Firmware</button>
       <button class="nav-button" type="button" data-view="uboot"><span class="nav-mark"></span>Chainloader</button>
       <button class="nav-button" type="button" data-view="layout"><span class="nav-mark"></span>eMMC layout</button>
+      <button class="nav-button" type="button" data-view="backup"><span class="nav-mark"></span>Backup</button>
     </nav>
     <div class="side-meta">
       <strong>192.168.255.1</strong>
@@ -388,7 +406,7 @@ button{touch-action:manipulation}
 
         <div class="facts" id="facts">
           <div class="fact"><span class="fact-label">Target</span><span class="fact-value" id="target-value">kernel + rootfs</span></div>
-          <div class="fact"><span class="fact-label">Write mode</span><span class="fact-value" id="method-value">Erase first, direct stream</span></div>
+          <div class="fact"><span class="fact-label" id="method-label">Write mode</span><span class="fact-value" id="method-value">Erase first, direct stream</span></div>
           <div class="fact"><span class="fact-label" id="limit-label">Image limit</span><span class="fact-value" id="limit-value">32 MiB + 1 byte to 1 GiB</span></div>
         </div>
 
@@ -445,7 +463,28 @@ button{touch-action:manipulation}
           </div>
         </div>
 
-        <section class="progress-section" aria-label="Operation progress">
+        <div class="workspace backup-view" id="backup-view" hidden>
+          <label class="backup-label" for="partition-select">Source partition</label>
+          <select class="partition-select" id="partition-select" disabled>
+            <option value="">Loading partition table...</option>
+          </select>
+          <p class="backup-help" id="backup-help">Reading the current eMMC GPT.</p>
+
+          <div class="warning">
+            <span class="warning-mark">!</span>
+            <div>
+              <strong>Device-specific backup</strong>
+              <p>Raw partitions can contain MAC addresses, calibration data, credentials, and device keys. Store downloaded images securely.</p>
+            </div>
+          </div>
+
+          <div class="actions">
+            <p class="action-note">Data is read from eMMC and streamed directly to the browser without a RAM-sized staging image.</p>
+            <button class="primary-button" id="backup-button" type="button" disabled>Download partition</button>
+          </div>
+        </div>
+
+        <section class="progress-section" id="progress-section" aria-label="Operation progress">
           <div class="progress-inner">
             <div class="progress-head"><strong>Operation progress</strong><span id="progress-detail"></span></div>
             <p class="status-message" id="status-message">Select an image to begin.</p>
@@ -487,6 +526,7 @@ var profiles={
     title:"System firmware",
     copy:"Replace the OpenWrt kernel and root filesystem from a raw SBE1V1K sysupgrade image.",
     target:"kernel + rootfs",
+    methodLabel:"Write mode",
     method:"Erase first, direct stream",
     limitLabel:"Image limit",
     limit:"32 MiB + 1 byte to 1 GiB",
@@ -500,6 +540,7 @@ var profiles={
     title:"Chainloader",
     copy:"Replace the second-stage SBE1V1K chainloader with a raw FIT image.",
     target:"chainloader",
+    methodLabel:"Write mode",
     method:"Erase first, direct stream",
     limitLabel:"Image limit",
     limit:"Up to 4 MiB",
@@ -513,9 +554,20 @@ var profiles={
     title:"eMMC layout",
     copy:"Replace the factory tail partition map with the SBE1V1K OpenWrt layout.",
     target:"eMMC user area",
+    methodLabel:"Write mode",
     method:"Preserve prefix, rebuild tail",
     limitLabel:"Boundary",
     limit:"Starts at LBA 110626"
+  },
+  backup:{
+    eyebrow:"Partition backup",
+    title:"Download eMMC partition",
+    copy:"Create a raw image of any partition in the current GPT without modifying storage.",
+    target:"Select a partition",
+    methodLabel:"Read mode",
+    method:"Direct read stream",
+    limitLabel:"Partition size",
+    limit:"Loading GPT"
   }
 };
 
@@ -527,8 +579,13 @@ var fileHelp=document.getElementById("file-help");
 var uploadButton=document.getElementById("upload-button");
 var confirmInput=document.getElementById("confirm-input");
 var repartitionButton=document.getElementById("repartition-button");
+var partitionSelect=document.getElementById("partition-select");
+var backupButton=document.getElementById("backup-button");
+var backupHelp=document.getElementById("backup-help");
 var state=document.getElementById("state");
 var statusMessage=document.getElementById("status-message");
+var partitions=[];
+var partitionsLoaded=false;
 
 function profile(){return profiles[activeView]}
 
@@ -610,10 +667,73 @@ function setBusy(value){
   busy=value;
   chooseButton.disabled=value;
   confirmInput.disabled=value;
+  partitionSelect.disabled=value||!partitionsLoaded;
   var buttons=document.querySelectorAll(".nav-button");
   for(var i=0;i<buttons.length;i++)buttons[i].disabled=value;
   uploadButton.disabled=value||!selectedFile||!!fileError();
   repartitionButton.disabled=value||confirmInput.value!=="SBE1V1K_REPARTITION";
+  backupButton.disabled=value||!partitionSelect.value;
+}
+
+function selectedPartition(){
+  var number=Number(partitionSelect.value);
+  for(var i=0;i<partitions.length;i++)if(partitions[i].number===number)return partitions[i];
+  return null;
+}
+
+function updateBackupSelection(){
+  var part=selectedPartition();
+  backupButton.disabled=busy||!part;
+  backupHelp.className="backup-help";
+  if(!part){
+    document.getElementById("target-value").textContent="Select a partition";
+    document.getElementById("limit-value").textContent=partitionsLoaded?"Not selected":"Loading GPT";
+    if(partitionsLoaded){
+      backupHelp.textContent="Choose one partition from the current GPT.";
+      setState("Idle","idle","Choose a partition to download.");
+    }
+    return;
+  }
+  document.getElementById("target-value").textContent="P"+part.number+" / "+part.name;
+  document.getElementById("limit-value").textContent=formatBytes(part.size);
+  backupHelp.textContent="Starts at LBA "+part.start+"; "+part.blocks+" logical blocks.";
+  backupHelp.classList.add("ok");
+  setState("Ready","success","Partition is ready for a read-only download.");
+}
+
+async function loadPartitions(){
+  try{
+    var response=await fetch("/partitions",{cache:"no-store"});
+    if(!response.ok)throw new Error("partition request failed");
+    var data=await response.json();
+    if(!data||!Array.isArray(data.partitions))throw new Error("invalid partition response");
+    partitions=data.partitions;
+    partitionSelect.textContent="";
+    var placeholder=document.createElement("option");
+    placeholder.value="";
+    placeholder.textContent=partitions.length?"Choose a partition":"No GPT partitions found";
+    partitionSelect.appendChild(placeholder);
+    for(var i=0;i<partitions.length;i++){
+      var part=partitions[i];
+      var option=document.createElement("option");
+      option.value=String(part.number);
+      option.textContent="P"+part.number+" | "+part.name+" | "+formatBytes(part.size);
+      partitionSelect.appendChild(option);
+    }
+    partitionsLoaded=true;
+    partitionSelect.disabled=busy||!partitions.length;
+    if(activeView==="backup")updateBackupSelection();
+  }catch(error){
+    partitionsLoaded=false;
+    partitionSelect.textContent="";
+    var failed=document.createElement("option");
+    failed.textContent="Partition table unavailable";
+    partitionSelect.appendChild(failed);
+    partitionSelect.disabled=true;
+    backupHelp.textContent="Could not read the eMMC partition table. Review the serial console.";
+    backupHelp.className="backup-help error";
+    if(activeView==="backup")setState("Unavailable","error","The eMMC partition table could not be loaded.");
+  }
 }
 
 function setView(view){
@@ -631,22 +751,29 @@ function setView(view){
   document.getElementById("view-title").textContent=p.title;
   document.getElementById("view-copy").textContent=p.copy;
   document.getElementById("target-value").textContent=p.target;
+  document.getElementById("method-label").textContent=p.methodLabel;
   document.getElementById("method-value").textContent=p.method;
   document.getElementById("limit-label").textContent=p.limitLabel;
   document.getElementById("limit-value").textContent=p.limit;
   var layout=view==="layout";
-  document.getElementById("upload-view").hidden=layout;
+  var backup=view==="backup";
+  var upload=!layout&&!backup;
+  document.getElementById("upload-view").hidden=!upload;
   document.getElementById("layout-view").hidden=!layout;
+  document.getElementById("backup-view").hidden=!backup;
+  document.getElementById("progress-section").hidden=backup;
   document.getElementById("row-upload").hidden=layout;
   resetProgress();
-  if(!layout){
+  if(upload){
     fileHelp.textContent=p.help;
     document.getElementById("warning-copy").textContent=p.warning;
     document.getElementById("action-note").textContent=p.note;
     uploadButton.textContent=p.action;
     validateFile();
-  }else{
+  }else if(layout){
     validateConfirmation();
+  }else{
+    updateBackupSelection();
   }
 }
 
@@ -787,6 +914,20 @@ function repartition(){
   startPolling();
 }
 
+function downloadBackup(){
+  var part=selectedPartition();
+  if(!part||busy)return;
+  var link=document.createElement("a");
+  link.href="/backup/partition-"+part.number+".bin";
+  link.style.display="none";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setState("Downloading","working","The raw partition stream has started. Keep this recovery page open.");
+  backupHelp.textContent="Streaming P"+part.number+" / "+part.name+" to the browser.";
+  backupHelp.className="backup-help ok";
+}
+
 var navButtons=document.querySelectorAll(".nav-button");
 for(var i=0;i<navButtons.length;i++)navButtons[i].addEventListener("click",function(){
   var view=this.getAttribute("data-view");
@@ -798,10 +939,13 @@ fileInput.addEventListener("change",function(){selectedFile=this.files[0]||null;
 uploadButton.addEventListener("click",upload);
 confirmInput.addEventListener("input",validateConfirmation);
 repartitionButton.addEventListener("click",repartition);
+partitionSelect.addEventListener("change",updateBackupSelection);
+backupButton.addEventListener("click",downloadBackup);
 
 (async function(){
   var requested=location.hash.substring(1);
   setView(profiles[requested]?requested:"firmware");
+  loadPartitions();
   try{
     var response=await fetch("/about",{cache:"no-store"});
     var data=await response.json();
