@@ -3,603 +3,813 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SBE1V1K Recovery</title>
+<title>SBE1V1K Recovery Console</title>
 <style>
 :root{
-  --ink:#1a2530;
-  --muted:#677786;
-  --panel:#ffffff;
-  --panel-2:#f4f7f9;
-  --line:rgba(26,37,48,.1);
-  --accent:#de6b3a;
-  --accent-2:#348ea3;
-  --bg-1:#f7f4ef;
-  --bg-2:#eef3f6;
-  --bg-3:#ffffff;
+  color-scheme:light;
+  --page:#edf0f2;
+  --surface:#ffffff;
+  --sidebar:#171c1f;
+  --sidebar-line:#30373b;
+  --sidebar-text:#dce1e3;
+  --sidebar-muted:#929ca1;
+  --ink:#1d2529;
+  --muted:#667176;
+  --line:#d8dde0;
+  --line-strong:#bcc5c9;
+  --soft:#f5f7f7;
+  --accent:#c94f2d;
+  --accent-dark:#a83e21;
+  --accent-soft:#fff0eb;
+  --green:#287552;
+  --green-soft:#e8f4ed;
+  --amber:#91621d;
+  --amber-soft:#fff6df;
+  --danger:#a63d35;
+  --danger-soft:#fcecea;
 }
 *{box-sizing:border-box}
+html,body{min-height:100%;margin:0}
 body{
-  margin:0;
-  min-height:100vh;
-  font-family:Georgia,"Times New Roman",serif;
   color:var(--ink);
-  background:
-    radial-gradient(circle at top, rgba(222,107,58,.08), transparent 24%),
-    linear-gradient(180deg, var(--bg-1), var(--bg-2) 52%, var(--bg-3));
+  background:var(--page);
+  font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
 }
-.shell{
-  max-width:860px;
-  margin:0 auto;
-  padding:30px 16px 42px;
-}
-.hero{
-  border:1px solid var(--line);
-  border-radius:24px;
-  padding:24px 22px 20px;
-  background:linear-gradient(180deg, var(--panel), var(--panel-2));
-  box-shadow:0 22px 50px rgba(26,37,48,.08);
-}
-.eyebrow{
-  margin:0;
-  letter-spacing:.18em;
-  text-transform:uppercase;
-  font-size:12px;
-  color:var(--muted);
-}
-h1{
-  margin:10px 0 8px;
-  font-size:36px;
-  line-height:1.02;
-}
-.lead,.meta,.note{
-  margin:0;
-  color:var(--muted);
-}
-.lead{font-size:15px}
-.meta{font-size:12px;margin-top:14px}
-.note{font-size:13px;margin-top:10px}
-.toolbar{
+button,input{font:inherit;letter-spacing:0}
+button{touch-action:manipulation}
+.app{
+  min-height:100svh;
   display:grid;
-  grid-template-columns:1.35fr .85fr auto;
-  gap:10px;
-  margin-top:22px;
+  grid-template-columns:252px minmax(0,1fr);
+  animation:page-in .28s ease both;
 }
-.force-row{
-  display:none;
-  margin-top:14px;
-  padding:12px 14px;
-  border-radius:16px;
-  border:1px solid rgba(26,37,48,.1);
-  background:rgba(255,255,255,.72);
+.sidebar{
+  min-height:100svh;
+  display:flex;
+  flex-direction:column;
+  padding:26px 18px 20px;
+  color:var(--sidebar-text);
+  background:var(--sidebar);
 }
-.force-row label{
+.brand{
+  padding:2px 8px 24px;
+  border-bottom:1px solid var(--sidebar-line);
+}
+.brand-name{display:block;font-size:18px;font-weight:760}
+.brand-model{display:block;margin-top:4px;color:var(--sidebar-muted);font-size:12px}
+.online{
   display:flex;
   align-items:center;
-  gap:10px;
-  font-size:14px;
-  font-weight:700;
-}
-.force-row input{
-  width:auto;
-  margin:0;
-}
-.force-row p{
-  margin:8px 0 0 0;
-  color:var(--muted);
-  font-size:13px;
-}
-input,select,button{
-  width:100%;
-  border-radius:14px;
-  font:inherit;
-}
-input,select{
-  border:1px solid rgba(26,37,48,.12);
-  padding:13px 14px;
-  color:#18232d;
-  background:#ffffff;
-}
-button{
-  border:0;
-  padding:13px 18px;
-  color:#fffaf8;
-  font-weight:700;
-  background:linear-gradient(90deg, var(--accent), #f59a5c);
-  cursor:pointer;
-}
-button.secondary{
-  background:linear-gradient(90deg, var(--accent-2), #63b6c5);
-}
-button.danger{
-  background:linear-gradient(90deg, #a33b3b, #d36a4e);
-}
-button:disabled{opacity:.6;cursor:default}
-.targets{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:12px;
+  gap:8px;
   margin-top:18px;
-}
-.target{
-  padding:16px;
-  border-radius:18px;
-  border:1px solid rgba(26,37,48,.08);
-  background:#fbfcfd;
-}
-.target.active{
-  border-color:rgba(222,107,58,.3);
-  background:linear-gradient(180deg, rgba(222,107,58,.08), rgba(255,255,255,1));
-}
-.target h2{
-  margin:0 0 8px;
-  font-size:20px;
-}
-.target p{
-  margin:0;
-  color:var(--muted);
-  line-height:1.5;
-  font-size:14px;
-}
-.repartition{
-  margin-top:18px;
-  padding:16px;
-  border-radius:18px;
-  border:1px solid rgba(163,59,59,.18);
-  background:#fffafa;
-}
-.repartition h2{
-  margin:0 0 8px;
-  font-size:20px;
-}
-.repartition p{
-  margin:0 0 12px;
-  color:var(--muted);
-  line-height:1.5;
-  font-size:14px;
-}
-.repartition-grid{
-  display:grid;
-  grid-template-columns:1fr auto;
-  gap:10px;
-}
-.progress{
-  display:none;
-  margin-top:20px;
-}
-.progress-row{margin-top:12px}
-.progress-label{
-  margin-bottom:6px;
-  color:#465662;
-  font-size:13px;
-}
-.progress-bar{
-  position:relative;
-  overflow:hidden;
-  border-radius:999px;
-  background:#e7edf1;
-  height:24px;
-}
-.progress-fill{
-  position:absolute;
-  inset:0 auto 0 0;
-  width:0;
-  background:linear-gradient(90deg, #6aa9db, #93ccef);
-  transition:width .25s ease;
-}
-.progress-fill.complete{
-  background:linear-gradient(90deg, var(--accent-2), #8ad7c9);
-}
-.progress-fill.inactive{
-  background:#d6dfe5;
-}
-.progress-text{
-  position:relative;
-  z-index:1;
-  line-height:24px;
-  text-align:center;
+  color:#a9d8be;
   font-size:12px;
+  font-weight:650;
 }
-#reboot-msg{
-  display:none;
-  margin-top:14px;
-  color:#80502f;
+.online-dot{
+  width:8px;
+  height:8px;
+  flex:0 0 8px;
+  border-radius:50%;
+  background:#52ae7b;
+  box-shadow:0 0 0 4px rgba(82,174,123,.12);
 }
-#log{
-  margin-top:18px;
-  min-height:150px;
-  padding:14px;
-  white-space:pre-wrap;
-  border-radius:18px;
-  border:1px solid rgba(26,37,48,.1);
-  background:#f7fafc;
-  font:12px/1.5 "Courier New",monospace;
-  overflow:auto;
+.nav-label{margin:26px 10px 9px;color:#788288;font-size:11px;font-weight:720;text-transform:uppercase}
+.nav{display:grid;gap:5px}
+.nav-button{
+  min-height:45px;
+  display:flex;
+  align-items:center;
+  gap:11px;
+  width:100%;
+  padding:0 12px;
+  border:1px solid transparent;
+  border-radius:6px;
+  color:#b9c1c5;
+  background:transparent;
+  cursor:pointer;
+  text-align:left;
+  font-weight:650;
+  transition:color .16s ease,background .16s ease,border-color .16s ease;
 }
-@media (max-width:720px){
-  .toolbar,.targets,.repartition-grid{grid-template-columns:1fr}
-  h1{font-size:30px}
+.nav-button:hover{color:#ffffff;background:#20272b}
+.nav-button.active{color:#ffffff;border-color:#424a4e;background:#293034}
+.nav-button:disabled{cursor:default;opacity:.48}
+.nav-mark{
+  width:4px;
+  height:18px;
+  flex:0 0 4px;
+  border-radius:2px;
+  background:#596267;
+  transition:background .16s ease,height .16s ease;
+}
+.nav-button.active .nav-mark{height:24px;background:var(--accent)}
+.side-meta{
+  margin-top:auto;
+  padding:18px 8px 0;
+  border-top:1px solid var(--sidebar-line);
+  color:var(--sidebar-muted);
+  font-size:11px;
+  overflow-wrap:anywhere;
+}
+.side-meta strong{display:block;margin-bottom:5px;color:#d7dcde;font-size:13px;font-weight:690}
+.main{min-width:0;padding:32px 34px 36px}
+.main-inner{width:min(940px,100%);margin:0 auto}
+.topbar{
+  min-height:42px;
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:24px;
+  margin-bottom:18px;
+}
+.topbar-label{margin:0;color:var(--muted);font-size:12px;font-weight:650}
+.topbar-title{margin:3px 0 0;font-size:18px;line-height:1.25;font-weight:760}
+.endpoint{text-align:right;color:var(--muted);font-size:12px}
+.endpoint strong{display:block;color:var(--ink);font:13px ui-monospace,SFMono-Regular,Consolas,monospace}
+.surface{
+  overflow:hidden;
+  border:1px solid var(--line-strong);
+  border-radius:8px;
+  background:var(--surface);
+  box-shadow:0 10px 28px rgba(31,43,49,.08);
+}
+.surface-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:22px;
+  padding:29px 32px 25px;
+  border-bottom:1px solid var(--line);
+}
+.eyebrow{margin:0 0 7px;color:var(--accent);font-size:11px;font-weight:760;text-transform:uppercase}
+.surface-head h1{margin:0;font-size:27px;line-height:1.2;font-weight:770}
+.surface-head p:last-child{max-width:610px;margin:9px 0 0;color:var(--muted)}
+.state{
+  min-width:82px;
+  min-height:30px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  flex:0 0 auto;
+  padding:5px 10px;
+  border-radius:5px;
+  color:#596368;
+  background:#edf0f1;
+  font-size:11px;
+  font-weight:730;
+}
+.state[data-tone="working"]{color:var(--amber);background:var(--amber-soft)}
+.state[data-tone="success"]{color:var(--green);background:var(--green-soft)}
+.state[data-tone="error"]{color:var(--danger);background:var(--danger-soft)}
+.facts{
+  display:grid;
+  grid-template-columns:1fr 1fr 1fr;
+  border-bottom:1px solid var(--line);
+  background:var(--soft);
+}
+.fact{min-width:0;padding:17px 22px;border-left:1px solid var(--line)}
+.fact:first-child{border-left:0}
+.fact-label{display:block;margin-bottom:4px;color:var(--muted);font-size:11px;font-weight:680}
+.fact-value{display:block;overflow-wrap:anywhere;font-size:13px;font-weight:700}
+.workspace{padding:29px 32px 31px}
+.upload-view,.layout-view{animation:view-in .2s ease both}
+.file-label{display:block;margin-bottom:9px;font-size:13px;font-weight:710}
+.file-input{display:none}
+.file-picker{
+  min-height:54px;
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto;
+  align-items:center;
+  overflow:hidden;
+  border:1px solid var(--line-strong);
+  border-radius:7px;
+  background:#fafbfb;
+}
+.choose-button{
+  align-self:stretch;
+  padding:0 18px;
+  border:0;
+  border-right:1px solid var(--line);
+  color:var(--ink);
+  background:#ffffff;
+  cursor:pointer;
+  font-weight:680;
+}
+.choose-button:hover:not(:disabled){color:var(--accent-dark);background:var(--accent-soft)}
+.choose-button:disabled{cursor:default;opacity:.45}
+.file-name{min-width:0;padding:0 15px;overflow:hidden;color:var(--muted);text-overflow:ellipsis;white-space:nowrap}
+.file-name.selected{color:var(--ink);font-weight:640}
+.file-size{padding:0 15px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap}
+.file-help{min-height:20px;margin:8px 0 0;color:var(--muted);font-size:12px}
+.file-help.ok{color:var(--green)}
+.file-help.error{color:var(--danger)}
+.warning{
+  display:grid;
+  grid-template-columns:28px minmax(0,1fr);
+  gap:11px;
+  margin-top:22px;
+  padding:14px 16px;
+  border:1px solid #e2c37e;
+  border-radius:7px;
+  background:var(--amber-soft);
+}
+.warning-mark{
+  width:24px;
+  height:24px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border:1px solid #c69a41;
+  border-radius:50%;
+  color:var(--amber);
+  font-weight:800;
+}
+.warning strong{display:block;color:#765019;font-size:12px}
+.warning p{margin:3px 0 0;color:#7d622f;font-size:12px}
+.actions{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:22px}
+.action-note{margin:0;color:var(--muted);font-size:12px}
+.primary-button,.danger-button{
+  min-width:176px;
+  min-height:46px;
+  padding:0 20px;
+  border:1px solid transparent;
+  border-radius:7px;
+  color:#ffffff;
+  cursor:pointer;
+  font-weight:730;
+  transition:background .16s ease,transform .16s ease,opacity .16s ease;
+}
+.primary-button{border-color:var(--accent-dark);background:var(--accent)}
+.primary-button:hover:not(:disabled){background:var(--accent-dark);transform:translateY(-1px)}
+.danger-button{border-color:#842f29;background:var(--danger)}
+.danger-button:hover:not(:disabled){background:#842f29;transform:translateY(-1px)}
+.primary-button:disabled,.danger-button:disabled{cursor:default;opacity:.4;transform:none}
+.progress-section{padding:0 32px 29px}
+.progress-inner{padding-top:23px;border-top:1px solid var(--line)}
+.progress-head{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:6px}
+.progress-head strong{font-size:13px}
+.status-message{min-height:20px;margin:0 0 8px;color:var(--muted);font-size:12px}
+.progress-row{
+  min-height:43px;
+  display:grid;
+  grid-template-columns:62px minmax(0,1fr) 46px;
+  align-items:center;
+  gap:12px;
+  border-top:1px solid #e7eaeb;
+}
+.progress-label{font-size:12px;font-weight:680}
+.progress-track{height:7px;overflow:hidden;border-radius:4px;background:#e5e9ea}
+.progress-fill{width:0;height:100%;border-radius:4px;background:#8d999e;transition:width .22s ease}
+.progress-row.active .progress-fill{background:var(--accent);animation:pulse 1.15s ease-in-out infinite}
+.progress-row.complete .progress-fill{background:var(--green)}
+.progress-percent{text-align:right;color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
+.layout-copy{margin:0 0 22px;color:var(--muted)}
+.partition-table{min-width:620px;border-top:1px solid var(--line)}
+.partition-scroll{overflow-x:auto}
+.partition-row{
+  display:grid;
+  grid-template-columns:minmax(150px,1.2fr) minmax(150px,1fr) 130px 120px;
+  min-height:45px;
+  align-items:center;
+  border-bottom:1px solid var(--line);
+}
+.partition-row.header{min-height:36px;color:var(--muted);background:var(--soft);font-size:11px;font-weight:700}
+.partition-row span{padding:8px 12px;overflow-wrap:anywhere}
+.partition-row span+span{border-left:1px solid var(--line)}
+.partition-name{font-weight:700}
+.migration{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:12px;
+  align-items:end;
+  margin-top:25px;
+  padding-top:23px;
+  border-top:1px solid var(--line);
+}
+.confirm-label{display:block;margin-bottom:8px;font-size:12px;font-weight:700}
+.confirm-input{
+  width:100%;
+  min-height:46px;
+  padding:0 13px;
+  border:1px solid var(--line-strong);
+  border-radius:7px;
+  color:var(--ink);
+  background:#ffffff;
+  outline:none;
+}
+.confirm-input:focus{border-color:var(--danger);box-shadow:0 0 0 3px rgba(166,61,53,.09)}
+.confirm-input:disabled{opacity:.55}
+.footer{padding:14px 3px 0;color:#7b8589;font-size:11px;text-align:right}
+[hidden]{display:none!important}
+@keyframes page-in{from{transform:translateY(6px)}to{transform:none}}
+@keyframes view-in{from{transform:translateX(5px)}to{transform:none}}
+@keyframes pulse{50%{opacity:.62}}
+@media(max-width:780px){
+  .app{grid-template-columns:1fr}
+  .sidebar{min-height:0;padding:15px 14px}
+  .brand{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 3px 13px}
+  .online{margin:0}
+  .nav-label{display:none}
+  .nav{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding-top:12px}
+  .nav-button{justify-content:center;padding:0 7px;font-size:12px;text-align:center}
+  .nav-mark{display:none}
+  .side-meta{display:none}
+  .main{padding:20px 13px 28px}
+}
+@media(max-width:620px){
+  .topbar{min-height:0;margin-bottom:13px}
+  .endpoint{display:none}
+  .surface-head{padding:23px 19px 20px}
+  .surface-head h1{font-size:23px}
+  .facts{grid-template-columns:1fr}
+  .fact{padding:12px 19px;border-top:1px solid var(--line);border-left:0}
+  .fact:first-child{border-top:0}
+  .workspace{padding:22px 19px 24px}
+  .file-picker{grid-template-columns:auto minmax(0,1fr)}
+  .file-size{display:none}
+  .actions{align-items:stretch;flex-direction:column}
+  .primary-button,.danger-button{width:100%}
+  .progress-section{padding:0 19px 24px}
+  .migration{grid-template-columns:1fr}
+}
+@media(max-width:390px){
+  .brand-name{font-size:16px}
+  .brand-model{font-size:11px}
+  .nav-button{min-height:42px;font-size:11px}
+  .progress-row{grid-template-columns:52px minmax(0,1fr) 40px;gap:8px}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*:before,*:after{animation:none!important;transition:none!important}
 }
 </style>
 </head>
 <body>
-<div class="shell">
-  <section class="hero">
-    <p class="eyebrow">SBE1V1K Recovery</p>
-    <h1>Upload firmware or chainloader</h1>
-    <p class="lead">Recovery endpoint: <strong>192.168.255.1</strong></p>
-    <p class="note">Uploads are destructive: target partitions are erased before the request body is streamed directly to eMMC. An interrupted or invalid upload may leave the device unbootable.</p>
-
-    <div class="targets">
-      <div class="target active" id="card-firmware">
-        <h2>firmware</h2>
-        <p>OpenWrt/QSDK sysupgrade image</p>
-        <p>Must be larger than the 32 MiB kernel area and no more than 1 GiB</p>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div>
+        <strong class="brand-name">SBE1V1K</strong>
+        <span class="brand-model">Recovery Console</span>
       </div>
-      <div class="target" id="card-uboot">
-        <h2>uboot</h2>
-        <p>SBE1V1K raw chainloader FIT</p>
-        <p>Writes the dedicated `chainloader` partition</p>
-      </div>
+      <div class="online"><span class="online-dot"></span>Recovery online</div>
     </div>
-
-    <div class="toolbar">
-      <input id="f" type="file">
-      <select id="t" onchange="changeTarget()">
-        <option value="firmware">firmware</option>
-        <option value="uboot">uboot</option>
-      </select>
-      <button id="btn" onclick="upload()">Upload</button>
+    <p class="nav-label">Operations</p>
+    <nav class="nav" aria-label="Recovery operations">
+      <button class="nav-button active" type="button" data-view="firmware" aria-current="page"><span class="nav-mark"></span>Firmware</button>
+      <button class="nav-button" type="button" data-view="uboot"><span class="nav-mark"></span>Chainloader</button>
+      <button class="nav-button" type="button" data-view="layout"><span class="nav-mark"></span>eMMC layout</button>
+    </nav>
+    <div class="side-meta">
+      <strong>192.168.255.1</strong>
+      <span id="side-version">Loading U-Boot version...</span>
     </div>
+  </aside>
 
-    <div class="force-row" id="force-wrap">
-      <label>
-        <input id="force-recreate" type="checkbox">
-        Force wipe and recreate firmware volumes
-      </label>
-      <p>Only used by UBI targets. Ignored by this eMMC recovery backend.</p>
-    </div>
-
-    <div class="repartition">
-      <h2>Factory eMMC migration</h2>
-      <p>Preserves all existing partitions before LBA `0x1b022`; rebuilds the tail as `chainloader`, `kernel`, `rootfs`, and `rootfs_data`.</p>
-      <div class="repartition-grid">
-        <input id="repart-token" type="text" autocomplete="off" placeholder="SBE1V1K_REPARTITION">
-        <button class="danger" id="repart-btn" onclick="repartition()">Repartition factory eMMC</button>
-      </div>
-    </div>
-
-    <div class="progress" id="progress">
-      <div class="progress-row">
-        <div class="progress-label">Upload</div>
-        <div class="progress-bar">
-          <div class="progress-fill inactive" id="upload-fill"></div>
-          <div class="progress-text" id="upload-text">0%</div>
+  <main class="main">
+    <div class="main-inner">
+      <header class="topbar">
+        <div>
+          <p class="topbar-label">Device maintenance</p>
+          <p class="topbar-title">Boot recovery environment</p>
         </div>
-      </div>
-      <div class="progress-row">
-        <div class="progress-label">Erase</div>
-        <div class="progress-bar">
-          <div class="progress-fill inactive" id="erase-fill"></div>
-          <div class="progress-text" id="erase-text">0%</div>
-        </div>
-      </div>
-      <div class="progress-row">
-        <div class="progress-label">Write</div>
-        <div class="progress-bar">
-          <div class="progress-fill inactive" id="write-fill"></div>
-          <div class="progress-text" id="write-text">0%</div>
-        </div>
-      </div>
-    </div>
+        <div class="endpoint">Recovery endpoint<strong>192.168.255.1</strong></div>
+      </header>
 
-    <p id="reboot-msg">Flash complete. Rebooting in <strong id="reboot-sec">3</strong>s.</p>
-    <div id="log"></div>
-    <p class="meta" id="meta">Loading U-Boot version...</p>
-  </section>
+      <section class="surface">
+        <header class="surface-head">
+          <div>
+            <p class="eyebrow" id="eyebrow">Firmware recovery</p>
+            <h1 id="view-title">System firmware</h1>
+            <p id="view-copy">Replace the OpenWrt kernel and root filesystem from a raw SBE1V1K sysupgrade image.</p>
+          </div>
+          <span class="state" id="state" data-tone="idle">Idle</span>
+        </header>
+
+        <div class="facts" id="facts">
+          <div class="fact"><span class="fact-label">Target</span><span class="fact-value" id="target-value">kernel + rootfs</span></div>
+          <div class="fact"><span class="fact-label">Write mode</span><span class="fact-value" id="method-value">Erase first, direct stream</span></div>
+          <div class="fact"><span class="fact-label" id="limit-label">Image limit</span><span class="fact-value" id="limit-value">32 MiB + 1 byte to 1 GiB</span></div>
+        </div>
+
+        <div class="workspace upload-view" id="upload-view">
+          <label class="file-label" for="file-input">Image file</label>
+          <input class="file-input" id="file-input" type="file" accept=".bin,.img,.itb">
+          <div class="file-picker">
+            <button class="choose-button" id="choose-button" type="button">Choose file</button>
+            <span class="file-name" id="file-name">No file selected</span>
+            <span class="file-size" id="file-size"></span>
+          </div>
+          <p class="file-help" id="file-help">Select a raw SBE1V1K sysupgrade image.</p>
+
+          <div class="warning">
+            <span class="warning-mark">!</span>
+            <div>
+              <strong>Destructive operation</strong>
+              <p id="warning-copy">kernel, rootfs, and rootfs_data are erased before upload data is written. Interrupted uploads are not recoverable from the target partitions.</p>
+            </div>
+          </div>
+
+          <div class="actions">
+            <p class="action-note" id="action-note">The first 32 MiB is written to kernel; the remainder is written to rootfs.</p>
+            <button class="primary-button" id="upload-button" type="button" disabled>Upload firmware</button>
+          </div>
+        </div>
+
+        <div class="workspace layout-view" id="layout-view" hidden>
+          <p class="layout-copy">Migration preserves every existing partition before LBA 110626 and rebuilds the OpenWrt tail layout shown below.</p>
+          <div class="partition-scroll">
+            <div class="partition-table" role="table" aria-label="Target eMMC layout">
+              <div class="partition-row header" role="row"><span>Name</span><span>Start LBA</span><span>Size</span><span>Purpose</span></div>
+              <div class="partition-row" role="row"><span class="partition-name">chainloader</span><span>110626</span><span>4 MiB</span><span>U-Boot FIT</span></div>
+              <div class="partition-row" role="row"><span class="partition-name">kernel</span><span>118818</span><span>32 MiB</span><span>Boot FIT</span></div>
+              <div class="partition-row" role="row"><span class="partition-name">rootfs</span><span>184354</span><span>1 GiB</span><span>SquashFS</span></div>
+              <div class="partition-row" role="row"><span class="partition-name">rootfs_data</span><span>2281506</span><span>Remaining</span><span>Persistent data</span></div>
+            </div>
+          </div>
+
+          <div class="warning">
+            <span class="warning-mark">!</span>
+            <div>
+              <strong>Factory migration erases the current tail layout</strong>
+              <p>The running chainloader and APPSBLENV are written into the new layout. Upload firmware before leaving recovery.</p>
+            </div>
+          </div>
+
+          <div class="migration">
+            <div>
+              <label class="confirm-label" for="confirm-input">Enter SBE1V1K_REPARTITION to confirm</label>
+              <input class="confirm-input" id="confirm-input" type="text" autocomplete="off" spellcheck="false" placeholder="SBE1V1K_REPARTITION">
+            </div>
+            <button class="danger-button" id="repartition-button" type="button" disabled>Repartition eMMC</button>
+          </div>
+        </div>
+
+        <section class="progress-section" aria-label="Operation progress">
+          <div class="progress-inner">
+            <div class="progress-head"><strong>Operation progress</strong><span id="progress-detail"></span></div>
+            <p class="status-message" id="status-message">Select an image to begin.</p>
+            <div class="progress-row" id="row-upload">
+              <span class="progress-label">Upload</span>
+              <div class="progress-track"><div class="progress-fill" id="upload-fill"></div></div>
+              <span class="progress-percent" id="upload-percent">0%</span>
+            </div>
+            <div class="progress-row" id="row-erase">
+              <span class="progress-label">Erase</span>
+              <div class="progress-track"><div class="progress-fill" id="erase-fill"></div></div>
+              <span class="progress-percent" id="erase-percent">0%</span>
+            </div>
+            <div class="progress-row" id="row-write">
+              <span class="progress-label">Write</span>
+              <div class="progress-track"><div class="progress-fill" id="write-fill"></div></div>
+              <span class="progress-percent" id="write-percent">0%</span>
+            </div>
+          </div>
+        </section>
+      </section>
+      <footer class="footer" id="footer-version">SBE1V1K HTTP Recovery</footer>
+    </div>
+  </main>
 </div>
+
 <script>
-var pollTimer = null;
-var lastPhase = 0;
-var countdownStarted = false;
-var pollEpoch = 0;
-var pollOutcome = 0;
+var activeView="firmware";
+var selectedFile=null;
+var busy=false;
+var pollTimer=null;
+var pollEpoch=0;
+var pollOutcome=0;
+var countdownStarted=false;
 
-function setControlsDisabled(disabled) {
-  document.getElementById("btn").disabled = disabled;
-  document.getElementById("repart-btn").disabled = disabled;
+var profiles={
+  firmware:{
+    eyebrow:"Firmware recovery",
+    title:"System firmware",
+    copy:"Replace the OpenWrt kernel and root filesystem from a raw SBE1V1K sysupgrade image.",
+    target:"kernel + rootfs",
+    method:"Erase first, direct stream",
+    limitLabel:"Image limit",
+    limit:"32 MiB + 1 byte to 1 GiB",
+    help:"Select a raw SBE1V1K sysupgrade image.",
+    warning:"kernel, rootfs, and rootfs_data are erased before upload data is written. Interrupted uploads are not recoverable from the target partitions.",
+    note:"The first 32 MiB is written to kernel; the remainder is written to rootfs.",
+    action:"Upload firmware"
+  },
+  uboot:{
+    eyebrow:"Bootloader recovery",
+    title:"Chainloader",
+    copy:"Replace the second-stage SBE1V1K chainloader with a raw FIT image.",
+    target:"chainloader",
+    method:"Erase first, direct stream",
+    limitLabel:"Image limit",
+    limit:"Up to 4 MiB",
+    help:"Select a raw SBE1V1K chainloader FIT.",
+    warning:"chainloader is erased before upload data is written. A failed transfer can prevent the second-stage recovery environment from booting.",
+    note:"The OpenWrt kernel, rootfs, and rootfs_data partitions are not modified.",
+    action:"Upload chainloader"
+  },
+  layout:{
+    eyebrow:"Storage migration",
+    title:"eMMC layout",
+    copy:"Replace the factory tail partition map with the SBE1V1K OpenWrt layout.",
+    target:"eMMC user area",
+    method:"Preserve prefix, rebuild tail",
+    limitLabel:"Boundary",
+    limit:"Starts at LBA 110626"
+  }
+};
+
+var fileInput=document.getElementById("file-input");
+var chooseButton=document.getElementById("choose-button");
+var fileName=document.getElementById("file-name");
+var fileSize=document.getElementById("file-size");
+var fileHelp=document.getElementById("file-help");
+var uploadButton=document.getElementById("upload-button");
+var confirmInput=document.getElementById("confirm-input");
+var repartitionButton=document.getElementById("repartition-button");
+var state=document.getElementById("state");
+var statusMessage=document.getElementById("status-message");
+
+function profile(){return profiles[activeView]}
+
+function formatBytes(bytes){
+  if(bytes<1024)return bytes+" B";
+  if(bytes<1024*1024)return(bytes/1024).toFixed(1)+" KiB";
+  if(bytes<1024*1024*1024)return(bytes/(1024*1024)).toFixed(1)+" MiB";
+  return(bytes/(1024*1024*1024)).toFixed(2)+" GiB";
 }
 
-function log(msg) {
-  var box = document.getElementById("log");
-  box.textContent += msg + "\n";
-  box.scrollTop = box.scrollHeight;
+function fileError(){
+  if(!selectedFile)return"";
+  if(activeView==="firmware"&&selectedFile.size<=32*1024*1024)return"Firmware must be larger than the 32 MiB kernel area.";
+  if(activeView==="firmware"&&selectedFile.size>1024*1024*1024)return"Firmware must not exceed 1 GiB.";
+  if(activeView==="uboot"&&selectedFile.size>4*1024*1024)return"Chainloader must not exceed 4 MiB.";
+  if(activeView==="uboot"&&selectedFile.size===0)return"Chainloader image is empty.";
+  return"";
 }
 
-function changeTarget() {
-  var target = document.getElementById("t").value;
-  var forceWrap = document.getElementById("force-wrap");
-  var forceBox = document.getElementById("force-recreate");
-  document.getElementById("card-firmware").className =
-    "target" + (target === "firmware" ? " active" : "");
-  document.getElementById("card-uboot").className =
-    "target" + (target === "uboot" ? " active" : "");
-  document.getElementById("btn").className =
-    target === "uboot" ? "secondary" : "";
-  forceWrap.style.display = "none";
-  forceBox.checked = false;
+function setState(label,tone,message){
+  state.textContent=label;
+  state.setAttribute("data-tone",tone||"idle");
+  if(message!==undefined)statusMessage.textContent=message;
 }
 
-function setBar(name, pct, detail, state) {
-  var fill = document.getElementById(name + "-fill");
-  var text = document.getElementById(name + "-text");
-  var safePct = Math.max(0, Math.min(100, Math.round(pct || 0)));
-
-  fill.className = "progress-fill" + (state ? " " + state : "");
-  fill.style.width = safePct + "%";
-  text.textContent = safePct + "%" + (detail || "");
+function setProgress(name,pct,rowState){
+  var value=Math.max(0,Math.min(100,Math.round(pct||0)));
+  var row=document.getElementById("row-"+name);
+  row.className="progress-row"+(rowState?" "+rowState:"");
+  document.getElementById(name+"-fill").style.width=value+"%";
+  document.getElementById(name+"-percent").textContent=value+"%";
 }
 
-function resetProgress() {
-  setBar("upload", 0, "", "inactive");
-  setBar("erase", 0, "", "inactive");
-  setBar("write", 0, "", "inactive");
+function resetProgress(message){
+  setProgress("upload",0,"");
+  setProgress("erase",0,"");
+  setProgress("write",0,"");
+  document.getElementById("progress-detail").textContent="";
+  countdownStarted=false;
+  setState("Idle","idle",message||(activeView==="layout"?"Enter the confirmation token to continue.":"Select an image to begin."));
 }
 
-function setUploadProgress(pct, detail, complete) {
-  setBar("upload", pct, detail, complete ? "complete" : "");
-  if (lastPhase !== 0)
-    lastPhase = 0;
-}
-
-function setBurnProgress(phase, pct, detail) {
-  if (phase === 1) {
-    setBar("upload", 100, "", "complete");
-    setBar("erase", pct, detail, "");
-    setBar("write", 0, "", "inactive");
-    if (lastPhase !== 1) {
-      log("Erasing target...");
-      lastPhase = 1;
+function validateFile(){
+  var error=fileError();
+  fileHelp.className="file-help";
+  if(!selectedFile){
+    fileName.textContent="No file selected";
+    fileName.className="file-name";
+    fileSize.textContent="";
+    fileHelp.textContent=profile().help;
+  }else{
+    fileName.textContent=selectedFile.name;
+    fileName.className="file-name selected";
+    fileSize.textContent=formatBytes(selectedFile.size);
+    if(error){
+      fileHelp.textContent=error;
+      fileHelp.classList.add("error");
+    }else{
+      fileHelp.textContent="Image ready for destructive upload.";
+      fileHelp.classList.add("ok");
     }
-  } else if (phase === 2) {
-    setBar("upload", 100, "", "complete");
-    setBar("erase", 100, "", "complete");
-    setBar("write", pct, detail, "");
-    if (lastPhase !== 2) {
-      log("Writing target...");
-      lastPhase = 2;
-    }
-  } else if (phase === 3) {
-    setBar("upload", 100, "", "complete");
-    setBar("erase", 100, "", "complete");
-    setBar("write", 100, "", "complete");
-  } else {
-    setBar("erase", 0, "", "inactive");
-    setBar("write", 0, "", "inactive");
+  }
+  uploadButton.disabled=busy||!selectedFile||!!error;
+  if(!busy&&activeView!=="layout"){
+    if(error)setState("Invalid","error",error);
+    else if(selectedFile)setState("Ready","success","Image ready. Target partitions will be erased when upload starts.");
   }
 }
 
-function showProgress(show) {
-  document.getElementById("progress").style.display = show ? "block" : "none";
-}
-
-function startCountdown(seconds) {
-  if (countdownStarted)
-    return;
-  countdownStarted = true;
-  document.getElementById("reboot-msg").style.display = "block";
-  document.getElementById("reboot-sec").textContent = String(seconds);
-  function tick(left) {
-    if (left <= 0)
-      return;
-    document.getElementById("reboot-sec").textContent = String(left);
-    setTimeout(function() { tick(left - 1); }, 1000);
-  }
-  setTimeout(function() { tick(seconds - 1); }, 1000);
-}
-
-async function pollStatus(epoch) {
-  if (epoch !== pollEpoch || pollOutcome !== 0)
-    return;
-
-  try {
-    var response = await fetch("/status");
-    if (epoch !== pollEpoch || pollOutcome !== 0)
-      return;
-
-    var data = await response.json();
-    if (epoch !== pollEpoch || pollOutcome !== 0)
-      return;
-
-    if (data.in_progress) {
-      var phase = data.phase || 0;
-      var pct = 0;
-      var detail = "";
-
-      if (phase === 1) {
-        pct = data.erase_total ? Math.round(data.erase_done * 100 / data.erase_total) : 0;
-      } else if (phase === 2) {
-        pct = data.write_total ? Math.round(data.write_done * 100 / data.write_total) : 0;
-        detail = " (" + Math.round((data.write_done || 0) / 1024) + "KB/" +
-                 Math.round((data.write_total || 0) / 1024) + "KB)";
-      }
-
-      setBurnProgress(phase, pct, detail);
-    } else if (data.ok) {
-      pollOutcome = 1;
-      setBurnProgress(3, 100, "");
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
-      if (data.reboot) {
-        log("Flash successful.");
-        startCountdown(3);
-      } else {
-        log("Action successful. Recovery remains online; upload firmware next.");
-        setControlsDisabled(false);
-      }
-    } else if (data.error) {
-      pollOutcome = -1;
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
-      log("Flash failed.");
-      setControlsDisabled(false);
-    }
-  } catch (err) {
+function validateConfirmation(){
+  repartitionButton.disabled=busy||confirmInput.value!=="SBE1V1K_REPARTITION";
+  if(!busy&&activeView==="layout"&&confirmInput.value){
+    if(repartitionButton.disabled)setState("Confirm","error","Confirmation token does not match.");
+    else setState("Ready","success","Factory migration is ready to start.");
   }
 }
 
-async function upload() {
-  var btn = document.getElementById("btn");
-  var file = document.getElementById("f").files[0];
-  var target = document.getElementById("t").value;
-  var forceRecreate =
-    target === "firmware" && document.getElementById("force-recreate").checked;
-  var minFirmware = 32 * 1024 * 1024 + 1;
-  var maxFirmware = 1024 * 1024 * 1024;
-  var maxUboot = 4 * 1024 * 1024;
-  var xhr = new XMLHttpRequest();
-  if (!file) {
-    log("No file selected.");
-    return;
-  }
+function setBusy(value){
+  busy=value;
+  chooseButton.disabled=value;
+  confirmInput.disabled=value;
+  var buttons=document.querySelectorAll(".nav-button");
+  for(var i=0;i<buttons.length;i++)buttons[i].disabled=value;
+  uploadButton.disabled=value||!selectedFile||!!fileError();
+  repartitionButton.disabled=value||confirmInput.value!=="SBE1V1K_REPARTITION";
+}
 
-  if (target === "firmware" && file.size < minFirmware) {
-    log("Rejected: firmware image must be larger than the 32 MiB kernel area.");
-    return;
+function setView(view){
+  if(busy||!profiles[view])return;
+  activeView=view;
+  var p=profile();
+  var buttons=document.querySelectorAll(".nav-button");
+  for(var i=0;i<buttons.length;i++){
+    var active=buttons[i].getAttribute("data-view")===view;
+    buttons[i].classList.toggle("active",active);
+    if(active)buttons[i].setAttribute("aria-current","page");
+    else buttons[i].removeAttribute("aria-current");
   }
-
-  if (target === "firmware" && file.size > maxFirmware) {
-    log("Rejected: firmware image must not exceed 1 GiB.");
-    return;
-  }
-
-  if (target === "uboot" && file.size > maxUboot) {
-    log("Rejected: uboot image must not exceed 4096 KiB.");
-    return;
-  }
-
-  setControlsDisabled(true);
-  showProgress(true);
-  lastPhase = -1;
-  pollEpoch++;
-  pollOutcome = 0;
+  document.getElementById("eyebrow").textContent=p.eyebrow;
+  document.getElementById("view-title").textContent=p.title;
+  document.getElementById("view-copy").textContent=p.copy;
+  document.getElementById("target-value").textContent=p.target;
+  document.getElementById("method-value").textContent=p.method;
+  document.getElementById("limit-label").textContent=p.limitLabel;
+  document.getElementById("limit-value").textContent=p.limit;
+  var layout=view==="layout";
+  document.getElementById("upload-view").hidden=layout;
+  document.getElementById("layout-view").hidden=!layout;
+  document.getElementById("row-upload").hidden=layout;
   resetProgress();
-  countdownStarted = false;
-  document.getElementById("reboot-msg").style.display = "none";
-  log("Uploading " + file.name + " to " + target + "...");
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
+  if(!layout){
+    fileHelp.textContent=p.help;
+    document.getElementById("warning-copy").textContent=p.warning;
+    document.getElementById("action-note").textContent=p.note;
+    uploadButton.textContent=p.action;
+    validateFile();
+  }else{
+    validateConfirmation();
   }
-
-  xhr.upload.addEventListener("progress", function(ev) {
-    if (!ev.lengthComputable || ev.total <= 0)
-      return;
-
-    setUploadProgress(
-      ev.loaded * 100 / ev.total,
-      " (" + Math.round((ev.loaded || 0) / 1024) + "KB/" +
-      Math.round((ev.total || 0) / 1024) + "KB)",
-      false
-    );
-  });
-
-  xhr.addEventListener("load", function() {
-    setUploadProgress(100, "", true);
-
-    if (xhr.status < 200 || xhr.status >= 300) {
-      log("Server responded with HTTP " + xhr.status + ".");
-      setControlsDisabled(false);
-      return;
-    }
-
-    log("Upload finished. Checking burn status...");
-    var epoch = pollEpoch;
-    pollTimer = setInterval(function() { pollStatus(epoch); }, 500);
-    setTimeout(function() { pollStatus(epoch); }, 100);
-  });
-
-  xhr.addEventListener("error", function() {
-    log("Upload error: network request failed.");
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
-    setControlsDisabled(false);
-  });
-
-  xhr.open("POST", "/upload/" + target + (forceRecreate ? "?recreate=1" : ""),
-           true);
-  xhr.setRequestHeader("Content-Type", "application/octet-stream");
-  xhr.send(file);
 }
 
-function repartition() {
-  var token = document.getElementById("repart-token").value;
-  var xhr = new XMLHttpRequest();
-
-  if (token !== "SBE1V1K_REPARTITION") {
-    log("Rejected: confirmation token does not match.");
-    return;
+function updateServerProgress(data){
+  var phase=data.phase||0;
+  if(phase===1){
+    if(activeView!=="layout")setProgress("upload",0,"active");
+    setProgress("erase",data.erase_total?data.erase_done*100/data.erase_total:0,"active");
+    setProgress("write",0,"");
+    setState("Erasing","working","Target partitions are being erased. Do not disconnect power.");
+  }else if(phase===2){
+    setProgress("erase",100,"complete");
+    setProgress("write",data.write_total?data.write_done*100/data.write_total:0,"active");
+    setState("Writing","working",activeView==="layout"?"Writing the new partition layout.":"Streaming image data directly to eMMC.");
   }
+}
 
-  setControlsDisabled(true);
-  showProgress(true);
-  lastPhase = -1;
+function stopPolling(){
+  if(pollTimer)clearInterval(pollTimer);
+  pollTimer=null;
+}
+
+function startCountdown(seconds){
+  if(countdownStarted)return;
+  countdownStarted=true;
+  function tick(left){
+    setState("Complete","success","Operation complete. Device restart in "+left+" seconds.");
+    if(left>0)setTimeout(function(){tick(left-1)},1000);
+  }
+  tick(seconds);
+}
+
+async function pollStatus(epoch){
+  if(epoch!==pollEpoch||pollOutcome!==0)return;
+  try{
+    var response=await fetch("/status",{cache:"no-store"});
+    var data=await response.json();
+    if(epoch!==pollEpoch||pollOutcome!==0)return;
+    if(data.in_progress){
+      updateServerProgress(data);
+    }else if(data.ok){
+      pollOutcome=1;
+      stopPolling();
+      if(activeView!=="layout")setProgress("upload",100,"complete");
+      setProgress("erase",100,"complete");
+      setProgress("write",100,"complete");
+      if(data.reboot)startCountdown(3);
+      else{
+        setState("Complete","success","eMMC migration complete. Upload firmware before rebooting.");
+        setBusy(false);
+      }
+    }else if(data.error){
+      pollOutcome=-1;
+      stopPolling();
+      setState("Failed","error","Operation failed. Review the serial console before retrying.");
+      setBusy(false);
+    }
+  }catch(error){}
+}
+
+function startPolling(){
+  var epoch=pollEpoch;
+  stopPolling();
+  pollTimer=setInterval(function(){pollStatus(epoch)},500);
+  setTimeout(function(){pollStatus(epoch)},100);
+}
+
+function upload(){
+  if(!selectedFile||fileError()||activeView==="layout")return;
+  setBusy(true);
+  resetProgress("Preparing destructive upload.");
   pollEpoch++;
-  pollOutcome = 0;
-  resetProgress();
-  countdownStarted = false;
-  document.getElementById("reboot-msg").style.display = "none";
-  log("Starting factory eMMC migration...");
-  setUploadProgress(100, "", true);
+  pollOutcome=0;
+  setProgress("upload",0,"active");
+  setState("Preparing","working","Erasing target partitions before the stream begins.");
 
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-
-  xhr.addEventListener("load", function() {
-    if (xhr.status < 200 || xhr.status >= 300) {
-      log("Server responded with HTTP " + xhr.status + ".");
-      setControlsDisabled(false);
+  var xhr=new XMLHttpRequest();
+  xhr.upload.addEventListener("progress",function(event){
+    if(!event.lengthComputable||event.total<=0)return;
+    var complete=event.loaded>=event.total;
+    setProgress("upload",event.loaded*100/event.total,complete?"complete":"active");
+    document.getElementById("progress-detail").textContent=formatBytes(event.loaded)+" / "+formatBytes(event.total);
+    if(!complete)setState("Streaming","working","Writing upload data directly to eMMC.");
+  });
+  xhr.addEventListener("load",function(){
+    if(xhr.status<200||xhr.status>=300){
+      pollOutcome=-1;
+      stopPolling();
+      setState("Rejected","error","The server rejected the operation. Review the serial console.");
+      setBusy(false);
       return;
     }
-
-    log("Request accepted. Checking migration status...");
-    var epoch = pollEpoch;
-    pollTimer = setInterval(function() { pollStatus(epoch); }, 500);
-    setTimeout(function() { pollStatus(epoch); }, 100);
+    setProgress("upload",100,"complete");
+    setState("Finalizing","working","Upload complete. Waiting for the recovery status.");
+    pollStatus(pollEpoch);
   });
-
-  xhr.addEventListener("error", function() {
-    log("Migration request failed.");
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
-    setControlsDisabled(false);
+  xhr.addEventListener("error",function(){
+    pollOutcome=-1;
+    stopPolling();
+    setState("Network error","error","The destructive upload was interrupted. The target may not be bootable.");
+    setBusy(false);
   });
-
-  xhr.open("POST", "/action/repartition", true);
-  xhr.setRequestHeader("Content-Type", "text/plain");
-  xhr.send(token);
+  xhr.open("POST","/upload/"+activeView,true);
+  xhr.setRequestHeader("Content-Type","application/octet-stream");
+  xhr.send(selectedFile);
+  startPolling();
 }
 
-(async function() {
-  changeTarget();
-  try {
-    var response = await fetch("/about");
-    if (!response.ok)
+function repartition(){
+  if(confirmInput.value!=="SBE1V1K_REPARTITION"||busy)return;
+  setBusy(true);
+  resetProgress("Submitting factory migration request.");
+  pollEpoch++;
+  pollOutcome=0;
+  setState("Preparing","working","Verifying the factory eMMC layout.");
+
+  var xhr=new XMLHttpRequest();
+  xhr.addEventListener("load",function(){
+    if(xhr.status<200||xhr.status>=300){
+      pollOutcome=-1;
+      stopPolling();
+      setState("Rejected","error","Migration was rejected. Review the serial console.");
+      setBusy(false);
       return;
-    var data = await response.json();
-    if (data && data.u_boot)
-      document.getElementById("meta").textContent = data.u_boot;
-  } catch (err) {
-  }
+    }
+    setState("Finalizing","working","Migration request complete. Waiting for status.");
+    pollStatus(pollEpoch);
+  });
+  xhr.addEventListener("error",function(){
+    pollOutcome=-1;
+    stopPolling();
+    setState("Network error","error","Migration request was interrupted. Review the serial console.");
+    setBusy(false);
+  });
+  xhr.open("POST","/action/repartition",true);
+  xhr.setRequestHeader("Content-Type","text/plain");
+  xhr.send("SBE1V1K_REPARTITION");
+  startPolling();
+}
+
+var navButtons=document.querySelectorAll(".nav-button");
+for(var i=0;i<navButtons.length;i++)navButtons[i].addEventListener("click",function(){
+  var view=this.getAttribute("data-view");
+  location.hash=view;
+  setView(view);
+});
+chooseButton.addEventListener("click",function(){if(!busy)fileInput.click()});
+fileInput.addEventListener("change",function(){selectedFile=this.files[0]||null;validateFile()});
+uploadButton.addEventListener("click",upload);
+confirmInput.addEventListener("input",validateConfirmation);
+repartitionButton.addEventListener("click",repartition);
+
+(async function(){
+  var requested=location.hash.substring(1);
+  setView(profiles[requested]?requested:"firmware");
+  try{
+    var response=await fetch("/about",{cache:"no-store"});
+    var data=await response.json();
+    if(data&&data.u_boot){
+      document.getElementById("side-version").textContent=data.u_boot;
+      document.getElementById("footer-version").textContent=data.u_boot;
+    }
+  }catch(error){}
 })();
 </script>
 </body>
