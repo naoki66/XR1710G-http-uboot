@@ -129,16 +129,23 @@ The recovery action:
 SBE1V1K is an eMMC/GPT device. Recovery writes raw GPT partitions only; it must
 not format, create, resize, or write UBI volumes on this board.
 
-Every recovery image update is intentionally destructive. Before accepting the
-request body, a firmware upload fully erases `kernel`, `rootfs`, and
-`rootfs_data`; a chainloader upload fully erases `chainloader`. The HTTP body is
-then written directly to eMMC through a fixed 1 MiB RAM buffer. Recovery does
-not retain or validate the complete upload before writing, so an interrupted or
-incorrect upload can leave the target unbootable.
+Every recovery image update is intentionally destructive. The web client first
+posts the decimal image size to `/action/prepare/firmware` or
+`/action/prepare/uboot`. The recovery main loop then fully erases `kernel`,
+`rootfs`, and `rootfs_data` for firmware, or `chainloader` for a chainloader
+update. Erase work runs outside the lwIP POST callback so status requests and
+TCP maintenance continue while the operation is in progress.
+
+After `/status` reports `prepared`, the client posts the exact-size image to
+`/upload/firmware` or `/upload/uboot`. A direct upload without a matching
+prepared target and length is rejected. The HTTP body is written directly to
+eMMC through a fixed 1 MiB RAM buffer. Recovery does not retain or validate the
+complete upload before writing, so an interrupted or incorrect upload can leave
+the target unbootable.
 Recovery uses exact eMMC erase/TRIM when the device and partition alignment
 allow it. Otherwise, it zero-fills every logical block in the partition so an
 erase-group rounding operation cannot overwrite an adjacent GPT partition.
-The firmware stream uses the QSDK/OpenWrt SBE1V1K raw sysupgrade layout:
+The firmware stream uses the SBE1V1K raw recovery-image layout:
 `recovery_kernel_pad` bytes (32 MiB by default) go to `kernel`, and all
 remaining bytes go to `rootfs`. The default upload cap is 1 GiB. This design
 keeps the existing GPT and boot command unchanged; A/B was not selected because

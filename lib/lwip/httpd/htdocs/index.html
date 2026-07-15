@@ -519,18 +519,19 @@ var pollTimer=null;
 var pollEpoch=0;
 var pollOutcome=0;
 var countdownStarted=false;
+var uploadStarted=false;
 
 var profiles={
   firmware:{
     eyebrow:"Firmware recovery",
     title:"System firmware",
-    copy:"Replace the OpenWrt kernel and root filesystem from a raw SBE1V1K sysupgrade image.",
+    copy:"Replace the OpenWrt kernel and root filesystem from an SBE1V1K recovery image.",
     target:"kernel + rootfs",
     methodLabel:"Write mode",
     method:"Erase first, direct stream",
     limitLabel:"Image limit",
     limit:"32 MiB + 1 byte to 1 GiB",
-    help:"Select a raw SBE1V1K sysupgrade image.",
+    help:"Select the SBE1V1K squashfs-recovery.bin image.",
     warning:"kernel, rootfs, and rootfs_data are erased before upload data is written. Interrupted uploads are not recoverable from the target partitions.",
     note:"The first 32 MiB is written to kernel; the remainder is written to rootfs.",
     action:"Upload firmware"
@@ -625,6 +626,7 @@ function resetProgress(message){
   setProgress("write",0,"");
   document.getElementById("progress-detail").textContent="";
   countdownStarted=false;
+  uploadStarted=false;
   setState("Idle","idle",message||(activeView==="layout"?"Enter the confirmation token to continue.":"Select an image to begin."));
 }
 
@@ -780,7 +782,7 @@ function setView(view){
 function updateServerProgress(data){
   var phase=data.phase||0;
   if(phase===1){
-    if(activeView!=="layout")setProgress("upload",0,"active");
+    if(activeView!=="layout")setProgress("upload",0,"");
     setProgress("erase",data.erase_total?data.erase_done*100/data.erase_total:0,"active");
     setProgress("write",0,"");
     setState("Erasing","working","Target partitions are being erased. Do not disconnect power.");
@@ -812,7 +814,11 @@ async function pollStatus(epoch){
     var response=await fetch("/status",{cache:"no-store"});
     var data=await response.json();
     if(epoch!==pollEpoch||pollOutcome!==0)return;
-    if(data.in_progress){
+    if(data.prepared){
+      setProgress("erase",100,"complete");
+      setState("Prepared","working","Target erase complete. Starting the image stream.");
+      sendUpload();
+    }else if(data.in_progress){
       updateServerProgress(data);
     }else if(data.ok){
       pollOutcome=1;
@@ -841,15 +847,10 @@ function startPolling(){
   setTimeout(function(){pollStatus(epoch)},100);
 }
 
-function upload(){
-  if(!selectedFile||fileError()||activeView==="layout")return;
-  setBusy(true);
-  resetProgress("Preparing destructive upload.");
-  pollEpoch++;
-  pollOutcome=0;
+function sendUpload(){
+  if(uploadStarted||pollOutcome!==0)return;
+  uploadStarted=true;
   setProgress("upload",0,"active");
-  setState("Preparing","working","Erasing target partitions before the stream begins.");
-
   var xhr=new XMLHttpRequest();
   xhr.upload.addEventListener("progress",function(event){
     if(!event.lengthComputable||event.total<=0)return;
@@ -879,7 +880,38 @@ function upload(){
   xhr.open("POST","/upload/"+activeView,true);
   xhr.setRequestHeader("Content-Type","application/octet-stream");
   xhr.send(selectedFile);
-  startPolling();
+}
+
+function upload(){
+  if(!selectedFile||fileError()||activeView==="layout")return;
+  setBusy(true);
+  resetProgress("Preparing destructive upload.");
+  pollEpoch++;
+  pollOutcome=0;
+  setState("Preparing","working","Requesting a complete target erase before upload.");
+
+  var xhr=new XMLHttpRequest();
+  xhr.addEventListener("load",function(){
+    if(xhr.status<200||xhr.status>=300){
+      pollOutcome=-1;
+      stopPolling();
+      setState("Rejected","error","The server rejected the erase request. Review the serial console.");
+      setBusy(false);
+      return;
+    }
+    setState("Erasing","working","Target partitions are being erased. Do not disconnect power.");
+    startPolling();
+    pollStatus(pollEpoch);
+  });
+  xhr.addEventListener("error",function(){
+    pollOutcome=-1;
+    stopPolling();
+    setState("Network error","error","The erase request was interrupted before streaming began.");
+    setBusy(false);
+  });
+  xhr.open("POST","/action/prepare/"+activeView,true);
+  xhr.setRequestHeader("Content-Type","text/plain");
+  xhr.send(String(selectedFile.size));
 }
 
 function repartition(){

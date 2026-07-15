@@ -48,6 +48,7 @@
 #include <version.h>
 #include <timestamp.h>
 #include <limits.h>
+#include <vsprintf.h>
 #include <miiphy.h>
 #include <linux/mii.h>
 #include <mtd/ubi-user.h>
@@ -175,6 +176,8 @@ static bool recovery_board_is_sbe1v1k(void)
 #define RECOVERY_SBE1V1K_CHAINLOADER_PART "0#chainloader"
 #define RECOVERY_PARTITIONS_JSON_MAX (16 * 1024UL)
 #define RECOVERY_BACKUP_MAGIC         0x52424b50U
+#define RECOVERY_PREPARE_BODY_MAX     32U
+#define RECOVERY_PREPARE_START_DELAY_MS 100U
 
 struct recovery_backup_file {
 	u32 magic;
@@ -197,9 +200,9 @@ static u32 recv_off;
 static u32 recv_total;
 static int post_ok;
 static int upload_done;
-static bool recovery_in_http_callback;
 static struct recovery_status_led_ctrl *recovery_runtime_status_leds;
 static int flash_request;
+static int prepare_request;
 static volatile int reboot_request;
 static unsigned int recovery_backup_active;
 /* Progress for /status polling */
@@ -209,6 +212,7 @@ static volatile u32 prog_erase_total;
 static volatile u32 prog_erase_done;
 static volatile u32 prog_write_total;
 static volatile u32 prog_write_done;
+/* Phase 4 extends the original progress states with a prepared stream. */
 static volatile int prog_phase; /* 0 idle, 1 erase, 2 write, 3 done, -1 error */
 static volatile int prog_reboot;
 static unsigned long long prog_erase_volume_base;
@@ -219,6 +223,12 @@ static void post_delay_cb(void *arg)
 {
     (void)arg;
     flash_request = 1;
+}
+
+static void prepare_delay_cb(void *arg)
+{
+	(void)arg;
+	prepare_request = 1;
 }
 
 static void reboot_delay_cb(void *arg)
@@ -241,6 +251,9 @@ enum upload_target {
 };
 static enum upload_target current_target = TARGET_FIRMWARE;
 static bool current_force_recreate;
+static bool current_prepare_only;
+static enum upload_target prepare_target = TARGET_FIRMWARE;
+static size_t prepare_size;
 
 enum recovery_backend {
 	RECOVERY_BACKEND_MTD = 0,
@@ -2055,7 +2068,10 @@ struct recovery_mmc_stream {
 	int part_count;
 	int part_index;
 	int error;
+	enum upload_target target;
+	size_t total_expected;
 	bool active;
+	bool prepared;
 };
 
 static struct recovery_mmc_stream recovery_stream;
@@ -2108,6 +2124,8 @@ static int recovery_mmc_stream_prepare(enum upload_target target, size_t size)
 
 	recovery_mmc_stream_reset();
 	recovery_stream_completed = false;
+	recovery_stream.target = target;
+	recovery_stream.total_expected = size;
 
 	if (target == TARGET_FIRMWARE) {
 		if (size <= kernel_pad)
@@ -2173,12 +2191,12 @@ static int recovery_mmc_stream_prepare(enum upload_target target, size_t size)
 	if (ret)
 		goto err;
 
-	prog_phase = 2;
+	prog_phase = 4;
 	prog_erase_done = prog_erase_total;
 	prog_done = prog_erase_done;
 	recovery_stream.active = true;
-	printf("Destructive eMMC stream ready: erased %d target partition(s)\n",
-	       recovery_stream.part_count);
+	recovery_stream.prepared = true;
+	printf("Destructive eMMC stream prepared after complete target erase\n");
 	return 0;
 
 err:
@@ -3476,7 +3494,7 @@ static void recovery_service_runtime(struct recovery_status_led_ctrl *status_led
 	struct udevice *udev = eth_get_current();
 	struct netif *netif = net_lwip_get_netif();
 
-	if (!recovery_in_http_callback && udev && eth_is_active(udev) && netif)
+	if (udev && eth_is_active(udev) && netif)
 		net_lwip_rx(udev, netif);
 	if (status_leds)
 		recovery_status_led_poll(status_leds);
@@ -4112,6 +4130,47 @@ static unsigned long recovery_calc_target_max(enum upload_target tgt,
 	return limit;
 }
 
+static int recovery_validate_upload_length(enum upload_target target,
+					   bool force_recreate,
+					   unsigned long length)
+{
+	unsigned long env_max = env_get_hex("recovery_max", 0);
+	unsigned long min = 0;
+	loff_t target_ofs = 0;
+	unsigned long target_max;
+	unsigned long max;
+
+	target_max = recovery_calc_target_max(target, force_recreate,
+					      &target_ofs);
+	max = target_max ? target_max : RECOVERY_UPLOAD_MAX;
+
+	if (target == TARGET_FIRMWARE) {
+		if (recovery_backend_is_mmc() &&
+		    env_get_yesno("recovery_stream") == 1)
+			min = env_get_hex("recovery_kernel_pad",
+					  RECOVERY_KERNEL_PAD_SIZE) + 1;
+		else
+			min = RECOVERY_MIN_FIRMWARE_SIZE;
+	} else if (target == TARGET_UBOOT && max > recovery_uboot_limit()) {
+		max = recovery_uboot_limit();
+	}
+
+	if (env_max && env_max < max)
+		max = env_max;
+	if (!length || length > max || (min && length < min)) {
+		if (min && length < min)
+			printf("httpd: upload length %lu below allowed min %lu for target %d\n",
+			       length, min, target);
+		else
+			printf("httpd: upload length %lu exceeds allowed max %lu (target limit %lu, ofs 0x%llx)\n",
+			       length, max, target_max,
+			       (unsigned long long)target_ofs);
+		return -EFBIG;
+	}
+
+	return 0;
+}
+
 /* Only dynamic endpoints here; static files come from fsdata */
 
 static void recovery_http_static_file(struct fs_file *file, const char *data,
@@ -4403,7 +4462,7 @@ static int recovery_open_status(struct fs_file *file)
 			    "{\"in_progress\":%d,\"done\":%u,\"total\":%u,"
 			    "\"erase_done\":%u,\"erase_total\":%u,"
 			    "\"write_done\":%u,\"write_total\":%u,"
-			    "\"ok\":%d,\"error\":%d,\"phase\":%d,"
+			    "\"prepared\":%d,\"ok\":%d,\"error\":%d,\"phase\":%d,"
 			    "\"reboot\":%d}\n",
 			    prog_phase > 0 && prog_phase < 3,
 			    (unsigned int)prog_done, (unsigned int)prog_total,
@@ -4411,6 +4470,7 @@ static int recovery_open_status(struct fs_file *file)
 			    (unsigned int)prog_erase_total,
 			    (unsigned int)prog_write_done,
 			    (unsigned int)prog_write_total,
+			    recovery_stream.active && recovery_stream.prepared,
 			    prog_phase == 3, prog_phase == -1, prog_phase,
 			    prog_reboot);
 	if (json_len < 0)
@@ -4594,12 +4654,17 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
                        u16_t http_request_len, int content_len, char *response_uri,
                        u16_t response_uri_len, u8_t *post_auto_wnd)
 {
-    (void)http_request; (void)http_request_len; (void)connection;
-    /*
-     * Throttle large uploads explicitly: XR1710G recovery accepts firmware
-     * images that are much larger than a typical lwIP POST body and manual
-     * window updates avoid over-optimistic receive windows.
-     */
+	bool stream_enabled;
+	const char *tname;
+
+	(void)http_request;
+	(void)http_request_len;
+	(void)connection;
+	/*
+	 * Throttle large uploads explicitly: recovery accepts firmware images
+	 * that are much larger than a typical lwIP POST body and manual window
+	 * updates avoid over-optimistic receive windows.
+	 */
 	if (post_auto_wnd)
 		*post_auto_wnd = 0;
 	post_ok = 0;
@@ -4609,111 +4674,128 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
 		strlcpy(response_uri, "/fail.html", response_uri_len);
 		return ERR_USE;
 	}
+	if (prepare_request || (prog_phase > 0 && prog_phase < 3) ||
+	    prog_reboot || reboot_request) {
+		printf("httpd: rejecting concurrent destructive operation\n");
+		strlcpy(response_uri, "/fail.html", response_uri_len);
+		return ERR_USE;
+	}
 
-    upload_done = 0;
-    recv_off = 0;
-    recv_total = 0;
-    /* Reset progress state. */
-    prog_phase = 0;
-    prog_done = 0;
-    prog_total = 0;
-    prog_erase_done = 0;
+	upload_done = 0;
+	recv_off = 0;
+	recv_total = 0;
+	current_force_recreate = false;
+	current_prepare_only = false;
+
+	/* Accept optional query parameters after the target path. */
+	if (!strncmp(uri, "/action/prepare/firmware", 24) &&
+	    (uri[24] == '\0' || uri[24] == '?')) {
+		current_target = TARGET_FIRMWARE;
+		current_prepare_only = true;
+	} else if (!strncmp(uri, "/action/prepare/uboot", 21) &&
+		   (uri[21] == '\0' || uri[21] == '?')) {
+		current_target = TARGET_UBOOT;
+		current_prepare_only = true;
+	} else if (!strncmp(uri, "/upload/firmware", 16) &&
+		   (uri[16] == '\0' || uri[16] == '?')) {
+		current_target = TARGET_FIRMWARE;
+	} else if (!strncmp(uri, "/upload/uboot", 13) &&
+		   (uri[13] == '\0' || uri[13] == '?')) {
+		current_target = TARGET_UBOOT;
+	} else if (!strncmp(uri, "/action/repartition", 19) &&
+		   (uri[19] == '\0' || uri[19] == '?')) {
+		current_target = TARGET_REPARTITION;
+	} else if (!strncmp(uri, "/upload", 7) &&
+		   (uri[7] == '\0' || uri[7] == '?')) {
+		current_target = TARGET_FIRMWARE;
+	} else {
+		prog_phase = -1;
+		strlcpy(response_uri, "/fail.html", response_uri_len);
+		return ERR_ARG;
+	}
+
+	if (current_target == TARGET_FIRMWARE &&
+	    (strstr(uri, "?recreate=1") || strstr(uri, "&recreate=1") ||
+	     strstr(uri, "?force_recreate=1") ||
+	     strstr(uri, "&force_recreate=1")))
+		current_force_recreate = true;
+
+	stream_enabled = recovery_backend_is_mmc() &&
+			 env_get_yesno("recovery_stream") == 1 &&
+			 (current_target == TARGET_FIRMWARE ||
+			  current_target == TARGET_UBOOT);
+
+	if (current_prepare_only) {
+		if (!stream_enabled || content_len <= 0 ||
+		    content_len > RECOVERY_PREPARE_BODY_MAX) {
+			prog_phase = -1;
+			printf("httpd: invalid destructive prepare request\n");
+			strlcpy(response_uri, "/fail.html", response_uri_len);
+			return ERR_ARG;
+		}
+	} else if (current_target == TARGET_REPARTITION) {
+		if (content_len <= 0 ||
+		    (ulong)content_len > RECOVERY_REPARTITION_MAX) {
+			prog_phase = -1;
+			printf("httpd: invalid repartition request length %d\n",
+			       content_len);
+			strlcpy(response_uri, "/fail.html", response_uri_len);
+			return ERR_ARG;
+		}
+	} else if (content_len <= 0 ||
+		   recovery_validate_upload_length(current_target,
+						   current_force_recreate,
+						   content_len)) {
+		prog_phase = -1;
+		strlcpy(response_uri, "/fail.html", response_uri_len);
+		return ERR_ARG;
+	}
+
+	recv_total = content_len;
+	if (stream_enabled && !current_prepare_only) {
+		if (!recovery_stream.active || !recovery_stream.prepared ||
+		    recovery_stream.target != current_target ||
+		    recovery_stream.total_expected != recv_total) {
+			recovery_mmc_stream_reset();
+			recovery_stream_completed = false;
+			prog_phase = -1;
+			printf("httpd: destructive upload rejected; prepare target and exact size first\n");
+			strlcpy(response_uri, "/fail.html", response_uri_len);
+			return ERR_USE;
+		}
+
+		recovery_stream.prepared = false;
+		recovery_stream_completed = false;
+		prog_phase = 2;
+		prog_write_done = 0;
+		prog_write_total = recv_total;
+		prog_total = prog_erase_total + prog_write_total;
+		prog_done = prog_erase_total;
+		prog_reboot = 0;
+		post_ok = 1;
+		tname = current_target == TARGET_FIRMWARE ? "firmware" : "uboot";
+		printf("httpd: accepting prepared destructive stream of %u bytes for %s\n",
+		       recv_total, tname);
+		return ERR_OK;
+	}
+
+	/* Preparation bodies and non-streaming uploads use the bounded RAM path. */
+	recovery_mmc_stream_reset();
+	recovery_stream_completed = false;
+	prog_phase = 0;
+	prog_done = 0;
+	prog_total = 0;
+	prog_erase_done = 0;
 	prog_erase_total = 0;
 	prog_write_done = 0;
 	prog_write_total = 0;
 	prog_reboot = 0;
-	current_force_recreate = false;
-	recovery_mmc_stream_reset();
-	recovery_stream_completed = false;
-
-	    /* Accept optional query parameters after the target path. */
-    if (!strncmp(uri, "/upload/firmware", 16) && (uri[16] == '\0' || uri[16] == '?'))
-        current_target = TARGET_FIRMWARE;
-    else if (!strncmp(uri, "/upload/uboot", 13) && (uri[13] == '\0' || uri[13] == '?'))
-        current_target = TARGET_UBOOT;
-    else if (!strncmp(uri, "/action/repartition", 19) && (uri[19] == '\0' || uri[19] == '?'))
-        current_target = TARGET_REPARTITION;
-    else if (!strncmp(uri, "/upload", 7) && (uri[7] == '\0' || uri[7] == '?'))
-        current_target = TARGET_FIRMWARE;
-    else {
-        prog_phase = -1;
-        strlcpy(response_uri, "/fail.html", response_uri_len);
-        return ERR_ARG;
-    }
-
-    if (current_target == TARGET_FIRMWARE &&
-        (strstr(uri, "?recreate=1") || strstr(uri, "&recreate=1") ||
-         strstr(uri, "?force_recreate=1") || strstr(uri, "&force_recreate=1")))
-        current_force_recreate = true;
-
-    if (current_target == TARGET_REPARTITION) {
-        if (content_len <= 0 || (ulong)content_len > RECOVERY_REPARTITION_MAX) {
-            prog_phase = -1;
-            printf("httpd: invalid repartition request length %d\n",
-                   content_len);
-            strlcpy(response_uri, "/fail.html", response_uri_len);
-            return ERR_ARG;
-        }
-    } else {
-        ulong min = 0;
-        ulong env_max = env_get_hex("recovery_max", 0);
-        loff_t tmpofs = 0;
-        ulong dts_max = recovery_calc_target_max(current_target,
-                                                 current_force_recreate,
-                                                 &tmpofs);
-        ulong max = dts_max ? dts_max : RECOVERY_UPLOAD_MAX;
-
-		if (current_target == TARGET_FIRMWARE) {
-			if (recovery_backend_is_mmc() &&
-			    env_get_yesno("recovery_stream") == 1)
-				min = env_get_hex("recovery_kernel_pad",
-						  RECOVERY_KERNEL_PAD_SIZE) + 1;
-			else
-				min = RECOVERY_MIN_FIRMWARE_SIZE;
-		}
-        else if (current_target == TARGET_UBOOT &&
-                 max > recovery_uboot_limit())
-            max = recovery_uboot_limit();
-
-        if (env_max && env_max < max)
-            max = env_max; /* allow env to further cap */
-        if (content_len <= 0 || (ulong)content_len > max ||
-            (min && (ulong)content_len < min)) {
-            prog_phase = -1;
-            if (min && (ulong)content_len < min) {
-                printf("httpd: content_len %d below allowed min %lu for target %d\n",
-                       content_len, min, current_target);
-            } else {
-                printf("httpd: content_len %d exceeds allowed max %lu (target limit %lu, ofs 0x%llx)\n",
-                       content_len, max, dts_max, (unsigned long long)tmpofs);
-            }
-            strlcpy(response_uri, "/fail.html", response_uri_len);
-            return ERR_ARG;
-        }
-    }
-
-	recv_total = content_len;
-	if (recovery_backend_is_mmc() &&
-	    env_get_yesno("recovery_stream") == 1 &&
-	    (current_target == TARGET_FIRMWARE ||
-	     current_target == TARGET_UBOOT)) {
-		int ret;
-
-		recovery_in_http_callback = true;
-		ret = recovery_mmc_stream_prepare(current_target, recv_total);
-		recovery_in_http_callback = false;
-		if (ret) {
-			printf("httpd: destructive stream preparation failed: %d\n", ret);
-			strlcpy(response_uri, "/fail.html", response_uri_len);
-			return ERR_IF;
-		}
-	}
 
 	/*
 	 * Pick a stable upload buffer:
 	 * recovery_addr -> loadaddr -> CONFIG_SYS_LOAD_ADDR -> RAM fallback.
 	 */
-	if (!recovery_stream.active) {
+	{
 		ulong ram_start = (ulong)gd->ram_base;
 		ulong ram_end = (ulong)gd->ram_base + (ulong)gd->ram_size;
 		ulong base = env_get_hex("recovery_addr", 0);
@@ -4744,19 +4826,16 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
 		recv_base = (u8 *)base;
 	}
 
-    post_ok = 1;
-    /* Leave response_uri untouched here so the POST can complete normally. */
-    const char *tname = current_target == TARGET_FIRMWARE ? "firmware" :
-                        current_target == TARGET_UBOOT ? "uboot" :
-                        "repartition";
-	if (recovery_stream.active)
-		printf("httpd: accepting destructive streaming upload of %u bytes for %s\n",
-		       recv_total, tname);
+	post_ok = 1;
+	tname = current_target == TARGET_FIRMWARE ? "firmware" :
+		current_target == TARGET_UBOOT ? "uboot" : "repartition";
+	if (current_prepare_only)
+		printf("httpd: accepting erase preparation for %s\n", tname);
 	else
 		printf("httpd: accepting upload of %u bytes for %s to 0x%08lx%s\n",
 		       recv_total, tname, (ulong)recv_base,
 		       current_force_recreate ? " (force recreate)" : "");
-    return ERR_OK;
+	return ERR_OK;
 }
 
 err_t httpd_post_receive_data(void *connection, struct pbuf *p)
@@ -4804,7 +4883,44 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p)
 
 void httpd_post_finished(void *connection, char *response_uri, u16_t response_uri_len)
 {
+	unsigned long requested_size;
+	int ret;
+
 	(void)connection;
+	if (current_prepare_only) {
+		if (!post_ok || !recv_total || recv_off != recv_total) {
+			post_ok = 0;
+			prog_phase = -1;
+		} else {
+			recv_base[recv_off] = '\0';
+			ret = strict_strtoul((const char *)recv_base, 10,
+					     &requested_size);
+			if (ret || recovery_validate_upload_length(current_target,
+								   false,
+								   requested_size)) {
+				post_ok = 0;
+				prog_phase = -1;
+			} else {
+				prepare_target = current_target;
+				prepare_size = requested_size;
+				/* -1 reserves the operation until the delayed callback fires. */
+				prepare_request = -1;
+				prog_phase = 0;
+			}
+		}
+
+		printf("httpd: prepare request finished, %u/%u bytes received\n",
+		       recv_off, recv_total);
+		if (post_ok) {
+			strlcpy(response_uri, "/ok", response_uri_len);
+			sys_timeout(RECOVERY_PREPARE_START_DELAY_MS,
+				    prepare_delay_cb, NULL);
+		} else {
+			strlcpy(response_uri, "/fail.html", response_uri_len);
+		}
+		return;
+	}
+
 	if (post_ok && recovery_stream.active && recv_off == recv_total) {
 		if (recovery_mmc_stream_finish()) {
 			post_ok = 0;
@@ -4834,6 +4950,8 @@ void httpd_post_finished(void *connection, char *response_uri, u16_t response_ur
 		else
 			sys_timeout(FLASH_START_DELAY_MS, post_delay_cb, NULL);
 	} else if (recovery_stream.active) {
+		post_ok = 0;
+		prog_phase = -1;
 		recovery_mmc_stream_reset();
 	}
 }
@@ -5083,6 +5201,9 @@ int run_http_recovery(void)
 	post_ok = 0;
 	upload_done = 0;
 	flash_request = 0;
+	prepare_request = 0;
+	prepare_size = 0;
+	current_prepare_only = false;
 	reboot_request = 0;
 	memset(&leds, 0, sizeof(leds));
 	memset(&status_leds, 0, sizeof(status_leds));
@@ -5158,6 +5279,20 @@ int run_http_recovery(void)
 			recovery_status_led_poll(&status_leds);
 		else if (use_link_leds)
 			recovery_led_poll(&leds);
+		if (prepare_request > 0) {
+			prepare_request = 0;
+			printf("Preparing destructive eMMC stream for %lu bytes...\n",
+			       (ulong)prepare_size);
+			rc = recovery_mmc_stream_prepare(prepare_target,
+							 prepare_size);
+			if (rc) {
+				prog_phase = -1;
+				printf("Destructive stream preparation failed: %d\n",
+				       rc);
+			} else {
+				printf("Target erase complete; waiting for image stream.\n");
+			}
+		}
 		if (flash_request) {
 			flash_request = 0;
 			printf("Upload done, flashing...\n");
