@@ -1,3 +1,38 @@
+# XR1710G U-Boot (Fork with DHCP Fix & CI Build)
+
+> **Fork by** [naoki66](https://github.com/naoki66) · **Original project** by [YYH2913](https://github.com/YYH2913/http-uboot) · **Original release** [260712](https://github.com/YYH2913/http-uboot/releases/tag/260712)
+
+## Fork Changes
+
+This fork is based on YYH2913's XR1710G http-uboot and adds the following modifications:
+
+### 1. DHCP Server Fix — Windows 11 Compatibility
+
+**Problem**: The built-in DHCP server did not include the Router (Option 3, default gateway) and DNS Server (Option 6) options in DHCP Offer/ACK responses. Windows 11's DHCP client has stricter validation and would ignore the incomplete response, leaving the PC without an IP address. Users had to manually set `192.168.255.x` to access the recovery page.
+
+**Fix**: Added Router and DNS options to `recovery_dhcp_send_reply()` in `net/lwip/httpd_recovery.c`. Both values default to the server IP (`192.168.255.1`).
+
+### 2. GitHub Actions CI — Automated Build & Release
+
+Added `.github/workflows/build.yml` for on-demand compilation and release publishing:
+- Manual trigger only (`workflow_dispatch`)
+- Cross-compiles with `aarch64-linux-gnu-` toolchain
+- Automatically packages the chainloader slot image (`*-flash-slot.bin`)
+- Publishes build artifacts to GitHub Releases with SHA256 checksums
+- Releases are available at [Actions](https://github.com/naoki66/XR1710G-http-uboot/actions) page
+
+### 3. Local Debug Mock Server
+
+Added `mock_server.py` for previewing and debugging the HTTP recovery UI locally without hardware.
+
+---
+
+## Original README
+
+The following is the original README by YYH2913, preserved in full.
+
+---
+
 # XR1710G U-Boot
 
 This is a customized U-Boot port for the XR1710G. Its main features are:
