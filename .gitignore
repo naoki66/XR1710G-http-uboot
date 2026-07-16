@@ -7,6 +7,8 @@
 #
 .*
 !.checkpatch.conf
+!.github/
+!.github/**
 *.a
 *.asn1.[ch]
 *.bin
@@ -142,3 +144,7 @@ __pycache__
 
 # Clang's compilation database file
 /compile_commands.json
+
+# XR1710G chainloader packaging assets
+!chainloader/
+!chainloader/**

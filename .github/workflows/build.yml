@@ -1,0 +1,124 @@
+name: Build U-Boot for XR1710G
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - 'doc/**'
+  pull_request:
+    branches:
+      - main
+      - master
+
+env:
+  CROSS_COMPILE: aarch64-linux-gnu-
+  DEFCONFIG: xr1710g_defconfig
+  ARCH: arm
+
+jobs:
+  build:
+    name: Build U-Boot
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            build-essential \
+            bison \
+            flex \
+            swig \
+            python3-dev \
+            python3-setuptools \
+            python3-pyelftools \
+            libssl-dev \
+            device-tree-compiler \
+            bc
+
+      - name: Get version info
+        id: version
+        run: |
+          echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "date=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          echo "version=$(make -s CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm UBOOTVERSION= 2>/dev/null || echo 'unknown')" >> $GITHUB_OUTPUT
+
+      - name: Configure
+        run: |
+          make ${DEFCONFIG}
+
+      - name: Build U-Boot
+        run: |
+          make -j$(nproc) all
+
+      - name: List build output
+        run: |
+          ls -la u-boot.bin u-boot.img u-boot.dtb || true
+          ls -la tools/mkimage tools/dumpimage || true
+
+      - name: Package chainloader slot image
+        run: |
+          chmod +x chainloader/build-chainloader-fit.sh
+          ./chainloader/build-chainloader-fit.sh \
+            u-boot.bin \
+            out \
+            tools/mkimage \
+            tools/dumpimage
+          ls -la out/
+
+      - name: Generate flash-slot.bin with version name
+        id: slotname
+        run: |
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          VERSION=$(make -s CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm UBOOTVERSION= 2>/dev/null || echo 'unknown')
+          DATE=$(date +%Y%m%d)
+          SLOT_NAME="xr1710g-uboot-v${VERSION}-${COMMIT_SHORT}-flash-slot.bin"
+          FIT_NAME="xr1710g-uboot-v${VERSION}-${COMMIT_SHORT}-chainloader.itb"
+          cp out/xr1710g-chainloader-slot.bin "out/${SLOT_NAME}"
+          cp out/xr1710g-chainloader.itb "out/${FIT_NAME}"
+          echo "slot_name=${SLOT_NAME}" >> $GITHUB_OUTPUT
+          echo "fit_name=${FIT_NAME}" >> $GITHUB_OUTPUT
+          sha256sum "out/${SLOT_NAME}"
+          sha256sum "out/${FIT_NAME}"
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p build-output
+          cp u-boot.bin build-output/
+          cp u-boot.img build-output/
+          cp u-boot.dtb build-output/ 2>/dev/null || true
+          cp tools/mkimage build-output/ 2>/dev/null || true
+          cp out/xr1710g-chainloader-slot.bin build-output/
+          cp out/xr1710g-chainloader.itb build-output/
+          cp "out/${{ steps.slotname.outputs.slot_name }}" build-output/
+          cp "out/${{ steps.slotname.outputs.fit_name }}" build-output/
+          echo "Build date: $(date)" > build-output/build-info.txt
+          echo "Commit: $(git rev-parse HEAD)" >> build-output/build-info.txt
+          echo "Commit short: $(git rev-parse --short HEAD)" >> build-output/build-info.txt
+          echo "Branch: $(git branch --show-current)" >> build-output/build-info.txt
+          echo "" >> build-output/build-info.txt
+          echo "Flash slot image: ${{ steps.slotname.outputs.slot_name }}" >> build-output/build-info.txt
+          echo "Chainloader FIT: ${{ steps.slotname.outputs.fit_name }}" >> build-output/build-info.txt
+          echo "" >> build-output/build-info.txt
+          echo "SHA256 sums:" >> build-output/build-info.txt
+          sha256sum "out/${{ steps.slotname.outputs.slot_name }}" >> build-output/build-info.txt
+          sha256sum "out/${{ steps.slotname.outputs.fit_name }}" >> build-output/build-info.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xr1710g-uboot-${{ steps.version.outputs.date }}-${{ steps.version.outputs.commit }}
+          path: build-output/
+          retention-days: 30

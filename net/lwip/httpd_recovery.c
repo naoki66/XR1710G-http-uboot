@@ -1034,6 +1034,12 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
 						       DHCP_OPTION_SUBNET_MASK,
 						       &srv->netmask);
+		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
+						       DHCP_OPTION_ROUTER,
+						       &srv->router);
+		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
+						       DHCP_OPTION_DNS_SERVER,
+						       &srv->dns);
 	}
 	if (opt_len < 0) {
 		pbuf_free(p);
