@@ -1015,7 +1015,7 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 	reply->flags = req->flags | lwip_htons(0x8000);
 	if (message_type != DHCP_NAK)
 		reply->yiaddr.addr = srv->client_ip.addr;
-	reply->siaddr.addr = 0;
+	reply->siaddr.addr = srv->server_ip.addr;
 	reply->giaddr = req->giaddr;
 	memcpy(reply->chaddr, req->chaddr, DHCP_CHADDR_LEN);
 	reply->cookie = PP_HTONL(DHCP_MAGIC_COOKIE);
@@ -1031,12 +1031,21 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 		opt_len = recovery_dhcp_put_u32_option(reply->options, opt_len,
 						       DHCP_OPTION_LEASE_TIME,
 						       RECOVERY_DHCP_LEASE_SECS);
+		opt_len = recovery_dhcp_put_u32_option(reply->options, opt_len,
+						       DHCP_OPTION_T1,
+						       RECOVERY_DHCP_LEASE_SECS / 2);
+		opt_len = recovery_dhcp_put_u32_option(reply->options, opt_len,
+						       DHCP_OPTION_T2,
+						       RECOVERY_DHCP_LEASE_SECS * 7 / 8);
 		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
 						       DHCP_OPTION_SUBNET_MASK,
 						       &srv->netmask);
 		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
 						       DHCP_OPTION_ROUTER,
 						       &srv->router);
+		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
+						       DHCP_OPTION_BROADCAST,
+						       &srv->broadcast);
 		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
 						       DHCP_OPTION_DNS_SERVER,
 						       &srv->dns);
