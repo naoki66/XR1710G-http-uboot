@@ -1065,6 +1065,18 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 				&src_addr);
 	pbuf_free(p);
 
+	if (err == ERR_OK) {
+		printf("DHCP: sent %s to %pM (offered %s)\n",
+		       message_type == DHCP_OFFER ? "OFFER" :
+		       message_type == DHCP_ACK ? "ACK" :
+		       message_type == DHCP_NAK ? "NAK" : "reply",
+		       req->chaddr,
+		       message_type != DHCP_NAK ?
+		       ip4addr_ntoa(&srv->client_ip) : "n/a");
+	} else {
+		printf("DHCP: send failed, err=%d\n", err);
+	}
+
 	return err == ERR_OK ? 0 : -EIO;
 }
 
@@ -1107,9 +1119,11 @@ static void recovery_dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
 	switch (message_type) {
 	case DHCP_DISCOVER:
+		printf("DHCP: DISCOVER from %pM\n", req->chaddr);
 		recovery_dhcp_send_reply(srv, req, DHCP_OFFER);
 		break;
 	case DHCP_REQUEST:
+		printf("DHCP: REQUEST from %pM\n", req->chaddr);
 		switch (recovery_dhcp_classify_request(srv, req, pkt, pkt_len)) {
 		case RECOVERY_DHCP_REQUEST_ACK:
 			recovery_dhcp_send_reply(srv, req, DHCP_ACK);
@@ -1121,7 +1135,13 @@ static void recovery_dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 			break;
 		}
 		break;
+	case DHCP_INFORM:
+		printf("DHCP: INFORM from %pM\n", req->chaddr);
+		recovery_dhcp_send_reply(srv, req, DHCP_ACK);
+		break;
 	default:
+		printf("DHCP: unknown msg type %u from %pM\n",
+		       message_type, req->chaddr);
 		break;
 	}
 
