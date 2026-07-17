@@ -2744,8 +2744,18 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
      * http_err callback frees the http_state but never calls
      * httpd_post_finished(), leaving post_ok stuck at 1. Recover from that
      * stale state before deciding whether to accept the new upload.
+     *
+     * But do NOT touch the state if the previous upload actually completed
+     * (recv_off >= recv_total): httpd_post_finished() has already scheduled
+     * flash_image() via sys_timeout(FLASH_START_DELAY_MS), and that deferred
+     * flash still needs recv_base/recv_off/recv_total intact.
      */
     if (post_ok && !flash_request && !reboot_request && prog_phase <= 0) {
+        if (recv_total && (recv_off >= recv_total)) {
+            printf("httpd: rejecting upload, previous upload awaiting flash\n");
+            strlcpy(response_uri, "/fail.html", response_uri_len);
+            return ERR_ARG;
+        }
         printf("httpd: clearing stale upload state (post_ok was set, "
                "recv_off=%u recv_total=%u)\n", recv_off, recv_total);
         post_ok = 0;
