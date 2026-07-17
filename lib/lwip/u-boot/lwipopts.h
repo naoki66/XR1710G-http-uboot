@@ -64,7 +64,13 @@
 
 #define MEM_ALIGNMENT                   8
 
+#if defined(CONFIG_HTTPD_RECOVERY)
+/* Recovery uploads multi-MiB firmware over HTTP POST: bump segment pool to
+ * absorb bursts and out-of-order segments without dropping. */
+#define MEMP_NUM_TCP_SEG                256
+#else
 #define MEMP_NUM_TCP_SEG                128
+#endif
 
 /* IP fragmentation parameters for TFTP reassembly */
 #define IP_FRAG_MTU_USABLE              1480
@@ -76,6 +82,11 @@
 #define PBUF_POOL_SIZE			(((CONFIG_TFTP_BLOCKSIZE + (IP_FRAG_MTU_USABLE - 1)) / \
 					  IP_FRAG_MTU_USABLE) + PBUF_POOL_HEADROOM)
 #define IP_REASS_MAX_PBUFS		(PBUF_POOL_SIZE - PBUF_POOL_RESERVE)
+#elif defined(CONFIG_HTTPD_RECOVERY)
+/* Recovery needs more pbuf slots than the bare default to sustain large
+ * POST uploads while the main loop is busy with memcpy. */
+#define PBUF_POOL_SIZE                  128
+#define IP_REASS_MAX_PBUFS              4
 #else
 #define PBUF_POOL_SIZE                  64
 #define IP_REASS_MAX_PBUFS              4
@@ -147,7 +158,13 @@
 #define TCP_WND                         CONFIG_LWIP_TCP_WND
 #define LWIP_WND_SCALE                  1
 #define TCP_RCV_SCALE                   0x7
+#if defined(CONFIG_HTTPD_RECOVERY)
+/* Recovery responses (fail.html, /status JSON, /ok) stall on a 2*MSS send
+ * buffer; 8*MSS lets a typical response leave in one trip. */
+#define TCP_SND_BUF                     (8 * TCP_MSS)
+#else
 #define TCP_SND_BUF                     (2 * TCP_MSS)
+#endif
 #ifdef CONFIG_PROT_TCP_SACK_LWIP
 #define LWIP_TCP_SACK_OUT               1
 #endif
@@ -188,6 +205,16 @@
  * while this file is still being parsed.
  */
 #define MEMP_NUM_SYS_TIMEOUT            8
+/*
+ * lwIP defaults (MEMP_NUM_TCP_PCB=5, MEMP_NUM_PBUF=16) are too tight for a
+ * browser session: the page keeps a keep-alive connection, the upload takes
+ * one, and favicon/prefetch can steal the rest, after which new SYNs get RST.
+ * Bump PCB / pbuf counts modestly for the recovery use case only.
+ */
+#define MEMP_NUM_TCP_PCB                8
+#define MEMP_NUM_TCP_PCB_LISTEN         2
+#define MEMP_NUM_TCP_PCB_TIME_WAIT      4
+#define MEMP_NUM_PBUF                   32
 #endif
 
 #if CONFIG_IS_ENABLED(MBEDTLS_LIB_TLS)

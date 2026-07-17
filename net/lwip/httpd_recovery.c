@@ -2739,6 +2739,20 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
     if (post_auto_wnd)
         *post_auto_wnd = 0;
 
+    /*
+     * If a previous upload ended with a TCP error (RST/timeout), lwIP's
+     * http_err callback frees the http_state but never calls
+     * httpd_post_finished(), leaving post_ok stuck at 1. Recover from that
+     * stale state before deciding whether to accept the new upload.
+     */
+    if (post_ok && !flash_request && !reboot_request && prog_phase <= 0) {
+        printf("httpd: clearing stale upload state (post_ok was set, "
+               "recv_off=%u recv_total=%u)\n", recv_off, recv_total);
+        post_ok = 0;
+        recv_off = 0;
+        recv_total = 0;
+    }
+
     if (post_ok || flash_request || reboot_request || prog_phase > 0) {
         printf("httpd: rejecting upload while recovery flash is busy (phase=%d)\n",
                prog_phase);
@@ -2892,17 +2906,22 @@ void httpd_post_finished(void *connection, char *response_uri, u16_t response_ur
     (void)connection;
     printf("httpd: post finished, %u/%u bytes received\n", recv_off, recv_total);
     /* Tell httpd which page to return after POST (keep user on main page) */
-    if (post_ok && recv_total && (recv_off >= recv_total))
+    if (post_ok && recv_total && (recv_off >= recv_total)) {
         strlcpy(response_uri, "/ok", response_uri_len);
-    else
-        strlcpy(response_uri, "/fail.html", response_uri_len);
-
-    /*
-     * Delay flashing slightly so the browser can finish receiving the POST
-     * response before erase/write work blocks the network loop.
-     */
-    if (post_ok && recv_total && (recv_off >= recv_total))
+        /*
+         * Delay flashing slightly so the browser can finish receiving the POST
+         * response before erase/write work blocks the network loop.
+         */
         sys_timeout(FLASH_START_DELAY_MS, post_delay_cb, NULL);
+    } else {
+        strlcpy(response_uri, "/fail.html", response_uri_len);
+        /*
+         * Clear post_ok on the failure path so a retry does not hit the
+         * "recovery flash is busy" guard in httpd_post_begin. flash_image()
+         * clears post_ok itself on the success path.
+         */
+        post_ok = 0;
+    }
 }
 
 static int flash_image(struct recovery_status_led_ctrl *status_leds)
