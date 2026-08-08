@@ -81,14 +81,13 @@ jobs:
         id: slotname
         run: |
           VERSION=${{ steps.version.outputs.version }}
-          DATE=${{ steps.version.outputs.date }}
           SLOT_NAME="xr1710g-uboot-v${VERSION}-flash-slot.bin"
           FIT_NAME="xr1710g-uboot-v${VERSION}-chainloader.itb"
           cp out/xr1710g-chainloader-slot.bin "out/${SLOT_NAME}"
           cp out/xr1710g-chainloader.itb "out/${FIT_NAME}"
           echo "slot_name=${SLOT_NAME}" >> $GITHUB_OUTPUT
           echo "fit_name=${FIT_NAME}" >> $GITHUB_OUTPUT
-          echo "tag=v${VERSION}-${DATE}" >> $GITHUB_OUTPUT
+          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
           sha256sum "out/${SLOT_NAME}"
           sha256sum "out/${FIT_NAME}"
 
@@ -133,7 +132,7 @@ jobs:
           gh release create "$TAG" \
             "out/${{ steps.slotname.outputs.slot_name }}" \
             "out/${{ steps.slotname.outputs.fit_name }}" \
-            --title "XR1710G U-Boot ${{ steps.version.outputs.version }} (${{ steps.version.outputs.date }})" \
+            --title "XR1710G U-Boot ${{ steps.version.outputs.version }}" \
             --notes "Automated build from commit ${{ steps.version.outputs.commit }}
 
           ## Files
