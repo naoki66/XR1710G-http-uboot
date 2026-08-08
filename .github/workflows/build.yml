@@ -60,6 +60,8 @@ jobs:
           echo "commit=${COMMIT_SHORT}" >> $GITHUB_OUTPUT
           echo "date=${DATE}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          SHORT_VERSION=$(printf '%s' "${VERSION}" | sed -E 's/^[^-]+-[^-]+-//')
+          echo "short_version=${SHORT_VERSION}" >> $GITHUB_OUTPUT
           echo "Parsed version: ${VERSION}"
 
       - name: List build output
@@ -132,7 +134,7 @@ jobs:
           gh release create "$TAG" \
             "out/${{ steps.slotname.outputs.slot_name }}" \
             "out/${{ steps.slotname.outputs.fit_name }}" \
-            --title "XR1710G U-Boot ${{ steps.version.outputs.version }}" \
+            --title "XR1710G U-Boot-${{ steps.version.outputs.short_version }}" \
             --notes "Automated build from commit ${{ steps.version.outputs.commit }}
 
           ## Files
