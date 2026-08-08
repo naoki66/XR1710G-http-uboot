@@ -38,6 +38,7 @@
 #include <lwip/prot/dhcp.h>
 #include <lwip/prot/iana.h>
 #include <version.h>
+#include <xr1710g_version.h>
 #include <timestamp.h>
 #include <limits.h>
 #include <miiphy.h>
@@ -66,7 +67,6 @@ ulong airoha_recovery_get_lan_activity_ms(void);
 
 /* Delay before reboot after flashing completes, to let browser finish reads */
 #define REBOOT_DELAY_MS        3000
-#define FLASH_START_DELAY_MS   3000
 #define RECOVERY_STATIC_IPADDR           "192.168.255.1"
 #define RECOVERY_STATIC_NETMASK          "255.255.255.0"
 #define RECOVERY_STATIC_GATEWAY          "0.0.0.0"
@@ -170,12 +170,6 @@ static void recovery_lwip_cleanup(struct netif *netif)
 	recovery_httpd_started = false;
 }
 
-static void post_delay_cb(void *arg)
-{
-    (void)arg;
-    flash_request = 1;
-}
-
 static void reboot_delay_cb(void *arg)
 {
     (void)arg;
@@ -184,7 +178,6 @@ static void reboot_delay_cb(void *arg)
 
 static void recovery_cancel_timeouts(void)
 {
-	sys_untimeout(post_delay_cb, NULL);
 	sys_untimeout(reboot_delay_cb, NULL);
 	flash_request = 0;
 	reboot_request = 0;
@@ -2630,7 +2623,7 @@ static int recovery_open_custom_response(struct fs_file *file,
 
 	file->data = page;
 	file->len = total_len;
-	file->index = 0;
+	file->index = file->len;
 	file->flags = FS_FILE_FLAGS_HEADER_INCLUDED;
 	return 1;
 }
@@ -2670,22 +2663,25 @@ int fs_open_custom(struct fs_file *file, const char *name)
 	    else if (!strcmp(p, "ok")) {
 	        file->data = recovery_page_ok;
 	        file->len = sizeof(recovery_page_ok) - 1;
-	        file->index = 0;
+	        file->index = file->len;
 	        file->flags = FS_FILE_FLAGS_HEADER_INCLUDED;
 	        return 1;
 	    }
 	    else if (!strcmp(p, "about")) {
-	        char json[256];
+	        char json[320];
 	        int json_len =
 #ifdef U_BOOT_DATE
 	            snprintf(json, sizeof(json),
-	                     "{\"u_boot\":\"%s (%s - %s %s)\",\"detected_layout\":\"%s\"}\n",
+	                     "{\"u_boot\":\"%s (%s - %s %s)\",\"recovery_version\":\"%s\",\"credit\":\"%s\",\"detected_layout\":\"%s\"}\n",
 	                     U_BOOT_VERSION, U_BOOT_DATE, U_BOOT_TIME, U_BOOT_TZ,
+	                     XR1710G_RELEASE_VERSION, XR1710G_RELEASE_CREDIT,
 	                     xr1710g_detect_ubi_version());
 #else
 	            snprintf(json, sizeof(json),
-	                     "{\"u_boot\":\"%s\",\"detected_layout\":\"%s\"}\n",
-	                     U_BOOT_VERSION, xr1710g_detect_ubi_version());
+	                     "{\"u_boot\":\"%s\",\"recovery_version\":\"%s\",\"credit\":\"%s\",\"detected_layout\":\"%s\"}\n",
+	                     U_BOOT_VERSION, XR1710G_RELEASE_VERSION,
+	                     XR1710G_RELEASE_CREDIT,
+	                     xr1710g_detect_ubi_version());
 #endif
         if (json_len < 0)
             return 0;
@@ -2723,7 +2719,7 @@ int fs_read_custom(struct fs_file *file, char *buffer, int count)
     return count;
 }
 
-/* bytes_left for custom files is handled by fs_read_custom + file->index; */
+/* Complete custom responses are supplied in file->data by fs_open_custom(). */
 
 /* HTTP POST handlers */
 err_t httpd_post_begin(void *connection, const char *uri, const char *http_request,
@@ -2746,13 +2742,13 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
      * stale state before deciding whether to accept the new upload.
      *
      * But do NOT touch the state if the previous upload actually completed
-     * (recv_off >= recv_total): httpd_post_finished() has already scheduled
-     * flash_image() via sys_timeout(FLASH_START_DELAY_MS), and that deferred
-     * flash still needs recv_base/recv_off/recv_total intact.
+     * (recv_off >= recv_total): httpd_post_finished() is waiting for the POST
+     * response to be acknowledged, and that callback still needs
+     * recv_base/recv_off/recv_total intact.
      */
     if (post_ok && !flash_request && !reboot_request && prog_phase <= 0) {
         if (recv_total && (recv_off >= recv_total)) {
-            printf("httpd: rejecting upload, previous upload awaiting flash\n");
+            printf("httpd: rejecting upload, previous upload awaiting response ACK\n");
             strlcpy(response_uri, "/fail.html", response_uri_len);
             return ERR_ARG;
         }
@@ -2913,26 +2909,41 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p)
 
 void httpd_post_finished(void *connection, char *response_uri, u16_t response_uri_len)
 {
-    (void)connection;
-    printf("httpd: post finished, %u/%u bytes received\n", recv_off, recv_total);
-    /* Tell httpd which page to return after POST (keep user on main page) */
-    if (post_ok && recv_total && (recv_off >= recv_total)) {
-        strlcpy(response_uri, "/ok", response_uri_len);
-        /*
-         * Delay flashing slightly so the browser can finish receiving the POST
-         * response before erase/write work blocks the network loop.
-         */
-        sys_timeout(FLASH_START_DELAY_MS, post_delay_cb, NULL);
-    } else {
-        strlcpy(response_uri, "/fail.html", response_uri_len);
-        /*
-         * Clear post_ok on the failure path so a retry does not hit the
-         * "recovery flash is busy" guard in httpd_post_begin. flash_image()
-         * clears post_ok itself on the success path.
-         */
-        post_ok = 0;
-    }
+	bool upload_complete;
+
+	(void)connection;
+	printf("httpd: post finished, %u/%u bytes received\n", recv_off, recv_total);
+	upload_complete = post_ok && recv_total && (recv_off >= recv_total);
+	if (upload_complete) {
+		strlcpy(response_uri, "/ok", response_uri_len);
+		printf("httpd: upload received; waiting for POST response ACK\n");
+	} else {
+		strlcpy(response_uri, "/fail.html", response_uri_len);
+		post_ok = 0;
+		prog_phase = -1;
+	}
 }
+
+#if LWIP_HTTPD_POST_RESPONSE_ACK
+void httpd_post_response_complete(void *connection, err_t result)
+{
+	(void)connection;
+
+	if (!post_ok || !recv_total || recv_off < recv_total)
+		return;
+
+	if (result != ERR_OK) {
+		printf("httpd: POST response not acknowledged (%d); flash cancelled\n",
+		       result);
+		post_ok = 0;
+		prog_phase = -1;
+		return;
+	}
+
+	printf("httpd: POST response acknowledged; flashing may start\n");
+	flash_request = 1;
+}
+#endif
 
 static int flash_image(struct recovery_status_led_ctrl *status_leds)
 {

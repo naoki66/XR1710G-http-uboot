@@ -284,6 +284,9 @@ struct http_state {
   u8_t no_auto_wnd;
   u8_t post_finished;
 #endif /* LWIP_HTTPD_POST_MANUAL_WND */
+#if LWIP_HTTPD_POST_RESPONSE_ACK
+  u8_t post_response_pending;
+#endif /* LWIP_HTTPD_POST_RESPONSE_ACK */
 #endif /* LWIP_HTTPD_SUPPORT_POST*/
 };
 
@@ -520,6 +523,17 @@ http_state_free(struct http_state *hs)
   }
 }
 
+#if LWIP_HTTPD_SUPPORT_POST && LWIP_HTTPD_POST_RESPONSE_ACK
+static void
+http_post_response_notify(struct http_state *hs, err_t result)
+{
+  if ((hs != NULL) && hs->post_response_pending) {
+    hs->post_response_pending = 0;
+    httpd_post_response_complete(hs, result);
+  }
+}
+#endif /* LWIP_HTTPD_SUPPORT_POST && LWIP_HTTPD_POST_RESPONSE_ACK */
+
 /** Call tcp_write() in a loop trying smaller and smaller length
  *
  * @param pcb altcp_pcb to send
@@ -598,6 +612,10 @@ http_close_or_abort_conn(struct altcp_pcb *pcb, struct http_state *hs, u8_t abor
   err_t err;
   LWIP_DEBUGF(HTTPD_DEBUG, ("Closing connection %p\n", (void *)pcb));
 
+#if LWIP_HTTPD_SUPPORT_POST && LWIP_HTTPD_POST_RESPONSE_ACK
+  http_post_response_notify(hs, abort_conn ? ERR_ABRT : ERR_CLSD);
+#endif
+
 #if LWIP_HTTPD_SUPPORT_POST
   if (hs != NULL) {
     if ((hs->post_content_len_left != 0)
@@ -654,6 +672,23 @@ http_close_conn(struct altcp_pcb *pcb, struct http_state *hs)
 static void
 http_eof(struct altcp_pcb *pcb, struct http_state *hs)
 {
+#if LWIP_HTTPD_SUPPORT_POST && LWIP_HTTPD_POST_RESPONSE_ACK
+  if (hs->post_response_pending) {
+    if (altcp_sndqueuelen(pcb) != 0) {
+      err_t err = altcp_output(pcb);
+
+      LWIP_DEBUGF(HTTPD_DEBUG | LWIP_DBG_LEVEL_WARNING,
+                  ("POST response awaiting ACK, output=%d\n", err));
+      if (err != ERR_OK) {
+        http_post_response_notify(hs, err);
+        http_close_conn(pcb, hs);
+      }
+      return;
+    }
+    http_post_response_notify(hs, ERR_OK);
+  }
+#endif
+
   /* HTTP/1.1 persistent connection? (Not supported for SSI) */
 #if LWIP_HTTPD_SUPPORT_11_KEEPALIVE
   if (hs->keepalive) {
@@ -1737,6 +1772,9 @@ http_handle_post_finished(struct http_state *hs)
   /* NULL-terminate the buffer */
   http_uri_buf[0] = 0;
   httpd_post_finished(hs, http_uri_buf, LWIP_HTTPD_URI_BUF_LEN);
+#if LWIP_HTTPD_POST_RESPONSE_ACK
+  hs->post_response_pending = 1;
+#endif
   return http_find_file(hs, http_uri_buf, 0);
 }
 
@@ -2474,11 +2512,14 @@ static void
 http_err(void *arg, err_t err)
 {
   struct http_state *hs = (struct http_state *)arg;
-  LWIP_UNUSED_ARG(err);
 
   LWIP_DEBUGF(HTTPD_DEBUG, ("http_err: %s\n", lwip_strerr(err)));
+  LWIP_UNUSED_ARG(err);
 
   if (hs != NULL) {
+#if LWIP_HTTPD_SUPPORT_POST && LWIP_HTTPD_POST_RESPONSE_ACK
+    http_post_response_notify(hs, err);
+#endif
     http_state_free(hs);
   }
 }
@@ -2538,6 +2579,9 @@ http_poll(void *arg, struct altcp_pcb *pcb)
     hs->retries++;
     if (hs->retries == HTTPD_MAX_RETRIES) {
       LWIP_DEBUGF(HTTPD_DEBUG, ("http_poll: too many retries, close\n"));
+#if LWIP_HTTPD_SUPPORT_POST && LWIP_HTTPD_POST_RESPONSE_ACK
+      http_post_response_notify(hs, ERR_TIMEOUT);
+#endif
       http_close_conn(pcb, hs);
       return ERR_OK;
     }

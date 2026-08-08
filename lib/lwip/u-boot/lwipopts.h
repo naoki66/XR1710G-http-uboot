@@ -200,7 +200,7 @@
 
 #if defined(CONFIG_HTTPD_RECOVERY)
 /*
- * Recovery uses sys_timeout() for deferred flashing/reboot. Keep a few extra
+ * Recovery uses sys_timeout() for deferred reboot. Keep a few extra
  * timeout slots available without depending on lwIP's internal opt.h state
  * while this file is still being parsed.
  */
@@ -231,6 +231,7 @@
 #define LWIP_HTTPD_DYNAMIC_HEADERS              1
 #define LWIP_HTTPD_SUPPORT_POST                 1
 #define LWIP_HTTPD_POST_MANUAL_WND              1
+#define LWIP_HTTPD_POST_RESPONSE_ACK             1
 #define LWIP_HTTPD_CUSTOM_FILES                 1
 #define LWIP_HTTPD_CGI                          0
 #define LWIP_HTTPD_SSI                          0
@@ -240,6 +241,9 @@
 #define LWIP_HTTPD_SUPPORT_REQUESTLIST          1
 #define LWIP_HTTPD_REQ_BUFSIZE                  16384
 #define LWIP_HTTPD_REQ_QUEUELEN                 64
+/* Custom recovery responses may be freed as soon as httpd closes the file. */
+#define HTTP_IS_DATA_VOLATILE(hs) \
+	(((hs)->handle->flags & FS_FILE_FLAGS_CUSTOM) ? TCP_WRITE_FLAG_COPY : 0)
 #endif
 
 #endif /* LWIP_UBOOT_LWIPOPTS_H */

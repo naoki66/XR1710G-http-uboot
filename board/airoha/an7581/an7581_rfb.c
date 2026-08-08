@@ -14,6 +14,7 @@
 #include <mtd.h>
 #include <net-common.h>
 #include <ubi_uboot.h>
+#include <xr1710g_version.h>
 #include <linux/bitops.h>
 #include <linux/err.h>
 #include <linux/kconfig.h>
@@ -654,6 +655,10 @@ int board_late_init(void)
 	char boot_ubi[64];
 	const char *ubi_part;
 	ulong recovery_addr;
+
+	if (xr1710g_is_compatible())
+		printf("XR1710G release %s - %s\n",
+		       XR1710G_RELEASE_VERSION, XR1710G_RELEASE_CREDIT);
 
 	xr1710g_sync_runtime_ethaddrs();
 	ubi_part = xr1710g_detect_ubi_part();

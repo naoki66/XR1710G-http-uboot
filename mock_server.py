@@ -8,7 +8,9 @@ import urllib.parse
 
 HTDOCS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib', 'lwip', 'httpd', 'htdocs')
 
-MOCK_UBOOT_VERSION = "U-Boot 2026.07-00762-g59060dde7b91 (Jul 12 2026 - 03:24:15 +0000)"
+MOCK_UBOOT_VERSION = "U-Boot 2026.07-XR1710G-2026-8-8 (Aug 08 2026 - local preview)"
+MOCK_RECOVERY_VERSION = "2026-8-8"
+MOCK_CREDIT = "Thanks to YYH2913"
 MOCK_DETECTED_LAYOUT = "2.0"
 
 prog_phase = 0
@@ -90,6 +92,8 @@ class RecoveryHandler(http.server.BaseHTTPRequestHandler):
         if path == '/about':
             self.send_json({
                 "u_boot": MOCK_UBOOT_VERSION,
+                "recovery_version": MOCK_RECOVERY_VERSION,
+                "credit": MOCK_CREDIT,
                 "detected_layout": MOCK_DETECTED_LAYOUT
             })
             return

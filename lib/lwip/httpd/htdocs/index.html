@@ -418,7 +418,7 @@ button,input,select{font:inherit;letter-spacing:0}
           </aside>
         </div>
       </section>
-      <footer class='footer' id='footer-version'>XR1710G HTTP Recovery</footer>
+      <footer class='footer' id='footer-version'>XR1710G HTTP Recovery 2026-8-8 | Thanks to YYH2913</footer>
     </div>
   </main>
 </div>
@@ -631,12 +631,22 @@ async function pollStatus(epoch){
   }catch(error){}
 }
 
+function startStatusPolling(epoch,label,message){
+  if(epoch!==pollEpoch||pollOutcome!==0)return;
+  setState(label,'working',message);
+  if(pollTimer)return;
+  pollTimer=setInterval(function(){pollStatus(epoch)},500);
+  setTimeout(function(){pollStatus(epoch)},100);
+}
+
 async function upload(){
   if(!selectedFile||fileError())return;
   setBusy(true);
   resetProgress();
   pollEpoch++;
   pollOutcome=0;
+  if(pollTimer)clearInterval(pollTimer);
+  pollTimer=null;
   setProgress('upload',0,'active');
   setState('Uploading','working','Uploading the image file.');
 
@@ -650,9 +660,15 @@ async function upload(){
   }
 
   var xhr=new XMLHttpRequest();
+  var uploadSent=false;
   xhr.upload.addEventListener('progress',function(event){
     if(!event.lengthComputable||event.total<=0)return;
+    if(event.loaded>=event.total)uploadSent=true;
     setProgress('upload',event.loaded*100/event.total,event.loaded>=event.total?'complete':'active');
+  });
+  xhr.upload.addEventListener('load',function(){
+    uploadSent=true;
+    setProgress('upload',100,'complete');
   });
   xhr.addEventListener('load',function(){
     if(xhr.status<200||xhr.status>=300){
@@ -661,13 +677,15 @@ async function upload(){
       return;
     }
     setProgress('upload',100,'complete');
-    setState('Processing','working','Upload complete. Waiting for erase and write operations.');
-    var epoch=pollEpoch;
-    pollTimer=setInterval(function(){pollStatus(epoch)},500);
-    setTimeout(function(){pollStatus(epoch)},100);
+    startStatusPolling(pollEpoch,'Processing','Upload complete. Waiting for erase and write operations.');
   });
   xhr.addEventListener('error',function(){
-    setState('Network Error','error','Image upload failed. Reconnect and try again.');
+    if(uploadSent){
+      setProgress('upload',100,'complete');
+      startStatusPolling(pollEpoch,'Checking Status','Upload was sent, but confirmation was interrupted. Do not power off or retry.');
+      return;
+    }
+    setState('Network Error','error','The upload connection failed before the image was sent. Reconnect and try again.');
     setBusy(false);
   });
 	  var uploadUri='/upload/'+activeTarget;
@@ -698,7 +716,9 @@ uploadButton.addEventListener('click',upload);
     var data=await response.json();
 	    if(data&&data.u_boot){
       document.getElementById('version').textContent=data.u_boot;
-	      document.getElementById('footer-version').textContent=data.u_boot;
+	    }
+	    if(data&&data.recovery_version&&data.credit){
+	      document.getElementById('footer-version').textContent='XR1710G HTTP Recovery '+data.recovery_version+' | '+data.credit;
 	    }
 	    if(data&&data.detected_layout){
 	      document.getElementById('detected-layout').textContent='UBI '+data.detected_layout;
