@@ -2,6 +2,12 @@
 
 > **Fork by** [naoki66](https://github.com/naoki66) · **Original project** by [YYH2913](https://github.com/YYH2913/http-uboot) · **Original release** [260712](https://github.com/YYH2913/http-uboot/releases/tag/260712)
 
+## 捐赠 / Donate
+
+如果您觉得对您有帮助，请我喝杯咖啡吧，让我更有动力持续更新。
+
+<img src="./c6ea388c976395326514814f80d512d5.png" width="220" alt="Donate / 捐赠二维码">
+
 ## Fork Changes
 
 This fork is based on YYH2913's XR1710G http-uboot and adds the following modifications:
