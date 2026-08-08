@@ -89,7 +89,7 @@ jobs:
           cp out/xr1710g-chainloader.itb "out/${FIT_NAME}"
           echo "slot_name=${SLOT_NAME}" >> $GITHUB_OUTPUT
           echo "fit_name=${FIT_NAME}" >> $GITHUB_OUTPUT
-          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${{ steps.version.outputs.release_date }}-${{ steps.version.outputs.commit }}" >> $GITHUB_OUTPUT
           sha256sum "out/${SLOT_NAME}"
           sha256sum "out/${FIT_NAME}"
 
