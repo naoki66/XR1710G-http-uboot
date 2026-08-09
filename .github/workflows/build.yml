@@ -82,9 +82,8 @@ jobs:
       - name: Generate flash-slot.bin with version name
         id: slotname
         run: |
-          VERSION=${{ steps.version.outputs.version }}
-          SLOT_NAME="xr1710g-uboot-v${VERSION}-flash-slot.bin"
-          FIT_NAME="xr1710g-uboot-v${VERSION}-chainloader.itb"
+          SLOT_NAME="xr1710g-uboot-${{ steps.version.outputs.release_date }}-${{ steps.version.outputs.commit }}-flash-slot.bin"
+          FIT_NAME="xr1710g-uboot-${{ steps.version.outputs.release_date }}-${{ steps.version.outputs.commit }}-chainloader.itb"
           cp out/xr1710g-chainloader-slot.bin "out/${SLOT_NAME}"
           cp out/xr1710g-chainloader.itb "out/${FIT_NAME}"
           echo "slot_name=${SLOT_NAME}" >> $GITHUB_OUTPUT
