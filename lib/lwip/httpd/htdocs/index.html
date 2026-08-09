@@ -104,7 +104,6 @@ button,input,select{font:inherit;letter-spacing:0}
   line-height:1.6;
 }
 .side-meta strong{display:block;color:#44505e;font-weight:680}
-.side-meta .credit{display:block;color:var(--blue);font-weight:600;margin-top:2px}
 .main{
   min-width:0;
   display:flex;
@@ -342,7 +341,6 @@ button,input,select{font:inherit;letter-spacing:0}
     <div class='side-meta'>
       <strong>192.168.255.1</strong>
       <span id='version'>Loading U-Boot version...</span>
-      <span class='credit' id='recovery-credit'>XR1710G HTTP Recovery 2026-8-8 | Thanks to YYH2913</span>
     </div>
   </aside>
 
@@ -717,11 +715,10 @@ uploadButton.addEventListener('click',upload);
     var response=await fetch('/about',{cache:'no-store'});
     var data=await response.json();
 	    if(data&&data.u_boot){
-      document.getElementById('version').textContent=data.u_boot;
+	      document.getElementById('version').textContent=data.u_boot.replace(/^U-Boot\s+\S+-XR1710G-/,'XR1710G-U-Boot-');
 	    }
 	    if(data&&data.recovery_version&&data.credit){
 	      document.getElementById('footer-version').textContent='XR1710G HTTP Recovery '+data.recovery_version+' | '+data.credit;
-	      document.getElementById('recovery-credit').textContent='XR1710G HTTP Recovery '+data.recovery_version+' | '+data.credit;
 	    }
 	    if(data&&data.detected_layout){
 	      document.getElementById('detected-layout').textContent='UBI '+data.detected_layout;
