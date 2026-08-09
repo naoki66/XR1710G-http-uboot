@@ -54,6 +54,7 @@ int xr1710g_sync_factory(void);
 int xr1710g_sync_factory_part(const char *part);
 const char *xr1710g_detect_ubi_version(void);
 ulong airoha_recovery_get_lan_activity_ms(void);
+void airoha_recovery_poll_link(struct udevice *dev);
 
 /*
  * Upload buffer
@@ -3229,6 +3230,7 @@ int run_http_recovery(void)
 		}
 		/* net_lwip_rx() already runs sys_check_timeouts(). */
 		net_lwip_rx(udev, netif);
+		airoha_recovery_poll_link(udev);
 		if (use_status_leds)
 			recovery_status_led_poll(&status_leds);
 		recovery_led_poll(&leds);

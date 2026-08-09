@@ -258,6 +258,7 @@
 #define AIROHA_RECOVERY_LAN_UP_SETTLE_MS 700
 #define AIROHA_RECOVERY_SWITCH_DOWN_SETTLE_MS 50
 #define AIROHA_RECOVERY_FDB_MOVE_FLUSH_MS 500
+#define AIROHA_RECOVERY_LINK_POLL_MS 1000
 #define AIROHA_RECOVERY_MDIO_RETRIES 3
 #define AIROHA_RECOVERY_MDIO_RETRY_US 1000
 #define AIROHA_RECOVERY_QDMA_STOP_TIMEOUT_US 50000
@@ -676,6 +677,7 @@ struct airoha_eth {
 	u8 last_rx_fport;
 	bool gdm4_pcs_ready;
 	bool gdm4_link_up;
+	u16 gdm4_link_speed;
 	bool rtl8261_init_done;
 	bool rtl8261_phy5_pnswap_tx;
 	bool rtl8261_phy5_pnswap_rx;
@@ -4064,11 +4066,60 @@ static void airoha_gdm4_recovery_prime(struct airoha_eth *eth)
 		airoha_recovery_set_default_fport(eth, 4);
 	} else if (airoha_recovery_dual_service_enabled()) {
 		airoha_recovery_set_default_fport(eth, 1);
-		if (airoha_recovery_gdm4_candidate(eth))
-			airoha_gdm4_ensure_ready(eth);
+		/*
+		 * Train the GDM4/USXGMII host link unconditionally in auto
+		 * mode. Gating the heavy bring-up on a live "candidate" link
+		 * deadlocks late cable plug-in: the RTL8261 host side only
+		 * forwards frames after this sequence, but candidate stays
+		 * false until the host link is trained, so a client plugged
+		 * straight into the 10G port never receives a DHCP OFFER.
+		 */
+		airoha_gdm4_ensure_ready(eth);
 	}
 
 	airoha_gdm4_update_cpu_path(eth);
+}
+
+/*
+ * Periodic recovery link maintenance, called from the HTTP recovery main
+ * loop. Handles clients that plug into the 10G port after recovery has
+ * started and follows copper speed changes (1G/2.5G/5G/10G) so the FE-side
+ * GDM4 fragment sizes stay in sync with the negotiated copper link.
+ */
+void airoha_recovery_poll_link(struct udevice *dev)
+{
+	struct airoha_eth *eth = dev_get_priv(dev);
+	static ulong last_poll;
+	ulong now = get_timer(0);
+	u16 speed;
+	bool copper_up;
+
+	if (now - last_poll < AIROHA_RECOVERY_LINK_POLL_MS)
+		return;
+	last_poll = now;
+
+	if (!airoha_recovery_accept_gdm4_rx())
+		return;
+
+	speed = RTL8261_PHY_SPEED_10000M;
+	copper_up = false;
+	if (airoha_rtl8261_link_state_get(eth, RTL8261_PHY5_ADDR, &copper_up,
+					  NULL, &speed, NULL, NULL))
+		return;
+
+	if (!copper_up)
+		return;
+
+	/* Copper link negotiated at a new rate: refresh GDM4 fragment sizes. */
+	if (speed != eth->gdm4_link_speed) {
+		eth->gdm4_link_speed = speed;
+		airoha_eth_gdm4_sync_rtl8261(eth);
+	}
+
+	/* Copper is up but the host side is not forwarding yet: kick it. */
+	if (!airoha_usxgmii_link_up(eth) ||
+	    !airoha_eth_gdm4_have_rx_signal(eth))
+		airoha_gdm4_ensure_ready(eth);
 }
 
 static u8 airoha_pick_tx_fport(struct airoha_eth *eth)
@@ -4896,6 +4947,7 @@ static void airoha_recovery_runtime_reset(struct airoha_eth *eth)
 	eth->last_tx_fport = 0;
 	eth->last_rx_fport = 0;
 	eth->gdm4_link_up = false;
+	eth->gdm4_link_speed = 0;
 	eth->last_rx_valid = false;
 	eth->last_rx_qdma = 0;
 	eth->last_rx_sport = 0;
