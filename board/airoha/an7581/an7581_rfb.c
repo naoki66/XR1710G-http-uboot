@@ -654,6 +654,7 @@ int board_late_init(void)
 {
 	char boot_ubi[64];
 	const char *ubi_part;
+	const char *recovery_trigger;
 	ulong recovery_addr;
 
 	if (xr1710g_is_compatible())
@@ -668,10 +669,25 @@ int board_late_init(void)
 	if (xr1710g_ubi_layout_available)
 		xr1710g_sync_factory_part(ubi_part);
 
-	if (!xr1710g_recovery_button_pressed())
+	recovery_trigger = env_get("recovery_trigger");
+	if (recovery_trigger && recovery_trigger[0]) {
+		/*
+		 * One-shot software recovery trigger, set by the LuCI
+		 * recovery app.  Clear and persist the flag before starting
+		 * the web recovery server so a power-cycle or a recovery
+		 * flash returns the device to normal booting.
+		 */
+		printf("Recovery trigger detected, starting web recovery...\n");
+		env_set("recovery_trigger", NULL);
+		if (env_save())
+			printf("Warning: failed to save environment, recovery "
+			       "will be re-entered on the next boot\n");
+	} else if (!xr1710g_recovery_button_pressed()) {
 		return 0;
+	} else {
+		printf("Recovery button detected, starting web recovery...\n");
+	}
 
-	printf("Recovery button detected, starting web recovery...\n");
 	env_set("ipaddr", "192.168.255.1");
 	env_set("netmask", "255.255.255.0");
 	env_set("gatewayip", "0.0.0.0");
