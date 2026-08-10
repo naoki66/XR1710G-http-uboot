@@ -43,12 +43,10 @@ jobs:
       - name: Configure
         run: |
           make ${DEFCONFIG}
-          scripts/config --file .config --set-str CONFIG_LOCALVERSION "-$(date +%Y-%-m-%-d)"
-          make olddefconfig
 
       - name: Build U-Boot
         run: |
-          make -j$(nproc) UBOOTVERSION=XR1710G all
+          make -j$(nproc) all
 
       - name: Get version info
         id: version

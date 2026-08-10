@@ -372,7 +372,7 @@ include $(srctree)/scripts/Makefile.compiler
 
 # Read UBOOTRELEASE from include/config/uboot.release (if it exists)
 UBOOTRELEASE = $(shell cat include/config/uboot.release 2> /dev/null)
-UBOOTVERSION = $(VERSION)$(if $(PATCHLEVEL),.$(PATCHLEVEL)$(if $(SUBLEVEL),.$(SUBLEVEL)))$(EXTRAVERSION)
+UBOOTVERSION = XR1710G
 export VERSION PATCHLEVEL SUBLEVEL UBOOTRELEASE UBOOTVERSION
 
 # Modified for U-Boot
@@ -2225,7 +2225,7 @@ endif
 # KERNELVERSION variable in the environment for figuring out which
 # annotated tags are relevant. Pass UBOOTVERSION.
 define filechk_uboot.release
-	KERNELVERSION=$(UBOOTVERSION) $(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree)
+	KERNELVERSION=$(UBOOTVERSION) LOCALVERSION="-$(shell date +%Y-%-m-%-d)" $(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree)
 endef
 
 # Store (new) UBOOTRELEASE string in include/config/uboot.release
