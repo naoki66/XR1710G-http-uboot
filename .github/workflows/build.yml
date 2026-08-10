@@ -43,6 +43,8 @@ jobs:
       - name: Configure
         run: |
           make ${DEFCONFIG}
+          scripts/config --file .config --set-str CONFIG_LOCALVERSION "-XR1710G-$(date +%Y-%-m-%-d)"
+          make olddefconfig
 
       - name: Build U-Boot
         run: |
