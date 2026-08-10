@@ -104,6 +104,8 @@ button,input,select{font:inherit;letter-spacing:0}
   line-height:1.6;
 }
 .side-meta strong{display:block;color:#44505e;font-weight:680}
+.version-link{color:inherit;text-decoration:none}
+.version-link:hover{text-decoration:underline}
 .main{
   min-width:0;
   display:flex;
@@ -340,7 +342,7 @@ button,input,select{font:inherit;letter-spacing:0}
     </nav>
     <div class='side-meta'>
       <strong>192.168.255.1</strong>
-      <span id='version'>Loading U-Boot version...</span>
+      <a class='version-link' href='https://github.com/naoki66/XR1710G-http-uboot/releases' target='_blank' rel='noopener'><span id='version'>Loading U-Boot version...</span></a>
     </div>
   </aside>
 
@@ -418,7 +420,7 @@ button,input,select{font:inherit;letter-spacing:0}
           </aside>
         </div>
       </section>
-      <footer class='footer' id='footer-version'>XR1710G HTTP Recovery 2026-8-8 | Thanks to YYH2913</footer>
+      <footer class='footer'><a class='version-link' href='https://github.com/naoki66/XR1710G-http-uboot/releases' target='_blank' rel='noopener'><span id='footer-version'>XR1710G HTTP Recovery</span></a></footer>
     </div>
   </main>
 </div>
@@ -714,11 +716,26 @@ uploadButton.addEventListener('click',upload);
   try{
     var response=await fetch('/about',{cache:'no-store'});
     var data=await response.json();
+	    var versionText=null;
 	    if(data&&data.u_boot){
-	      document.getElementById('version').textContent=data.u_boot.replace(/^U-Boot\s+\S+-XR1710G-/,'XR1710G-U-Boot-');
+	      var hashMatch=data.u_boot.match(/-g([0-9a-f]{7,})/);
+	      var dateMatch=data.u_boot.match(/\(([A-Z][a-z]{2}) (\d{1,2}) (\d{4})/);
+	      var buildDate=null;
+	      if(dateMatch){
+	        var monthNum=('Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec').split(',').indexOf(dateMatch[1])+1;
+	        if(monthNum){
+	          buildDate=dateMatch[3]+'-'+monthNum+'-'+parseInt(dateMatch[2],10);
+	        }
+	      }
+	      if(buildDate&&hashMatch){
+	        versionText='XR1710G HTTP Recovery '+buildDate+' '+hashMatch[1];
+	      }else{
+	        versionText=data.u_boot.replace(/^U-Boot\s+\S+-XR1710G-/,'XR1710G-U-Boot-');
+	      }
 	    }
-	    if(data&&data.recovery_version&&data.credit){
-	      document.getElementById('footer-version').textContent='XR1710G HTTP Recovery '+data.recovery_version+' | '+data.credit;
+	    if(versionText){
+	      document.getElementById('version').textContent=versionText;
+	      document.getElementById('footer-version').textContent=versionText;
 	    }
 	    if(data&&data.detected_layout){
 	      document.getElementById('detected-layout').textContent='UBI '+data.detected_layout;
