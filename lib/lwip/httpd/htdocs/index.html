@@ -313,6 +313,13 @@ button,input,select{font:inherit;letter-spacing:0}
 }
 .notice strong{display:block;margin-bottom:8px;color:#234a7c;font-size:13px}
 .notice ul{margin:0;padding-left:18px;color:#526985;font-size:12px;line-height:1.8}
+.notice li.critical-warning{
+  color:var(--red);
+  font-size:16px;
+  font-weight:800;
+  line-height:1.55;
+}
+.notice li.critical-warning::marker{color:var(--red)}
 .footer{
   padding:18px 8px 0;
   color:#7d8794;
@@ -435,7 +442,7 @@ button,input,select{font:inherit;letter-spacing:0}
           <aside class='notice'>
             <strong>Important</strong>
             <ul id='notice-list'>
-              <li>Do not power off the device during recovery.</li>
+              <li class='critical-warning'>Do not power off or reboot the device during recovery!</li>
               <li>The selected UBI partition is fully erased and rebuilt.</li>
               <li>The selection must match the image's embedded device tree.</li>
               <li>The device restarts automatically when recovery completes.</li>
@@ -466,7 +473,7 @@ var profiles={
 	    preserve:'Factory data is restored from DSD; saved U-Boot environment is reset',
 	    help:'Firmware images must be at least 1 MiB',
 	    action:'Upload and Recover',
-	    notices:['Do not power off the device during recovery.','The selected UBI partition is fully erased and rebuilt.','The selection must match the image\'s embedded device tree.','The device restarts automatically when recovery completes.']
+	    notices:['Do not power off or reboot the device during recovery!','The selected UBI partition is fully erased and rebuilt.','The selection must match the image\'s embedded device tree.','The device restarts automatically when recovery completes.']
   },
   uboot:{
     title:'Update U-Boot',
@@ -476,7 +483,7 @@ var profiles={
     preserve:'All UBI firmware volumes and configuration data',
     help:'U-Boot images must not exceed 1 MiB',
     action:'Upload and Update',
-    notices:['Do not power off the device during the U-Boot update.','The image format is validated before writing.','UBI firmware volumes are not modified.']
+    notices:['Do not power off or reboot the device during the U-Boot update!','The image format is validated before writing.','UBI firmware volumes are not modified.']
   }
 };
 
@@ -533,6 +540,7 @@ function setTarget(target){
   list.textContent='';
 	  for(var n=0;n<p.notices.length;n++){
     var item=document.createElement('li');
+	    if(n===0)item.className='critical-warning';
     item.textContent=p.notices[n];
     list.appendChild(item);
 	  }
