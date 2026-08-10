@@ -43,8 +43,6 @@ jobs:
       - name: Configure
         run: |
           make ${DEFCONFIG}
-          scripts/config --file .config --set-str CONFIG_LOCALVERSION "-XR1710G-$(date +%Y-%-m-%-d)"
-          make olddefconfig
 
       - name: Build U-Boot
         run: |
@@ -62,7 +60,7 @@ jobs:
           echo "commit=${COMMIT_SHORT}" >> $GITHUB_OUTPUT
           echo "date=${DATE}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          RELEASE_DATE=$(printf '%s' "${VERSION}" | sed -E 's/^[^-]+-[^-]+-//; s/-g[0-9a-f]+$//')
+          RELEASE_DATE=$(date +%Y-%-m-%-d)
           echo "release_date=${RELEASE_DATE}" >> $GITHUB_OUTPUT
           echo "Parsed version: ${VERSION}"
 
