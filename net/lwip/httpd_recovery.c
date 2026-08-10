@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
  * Minimal HTTP upload recovery server using lwIP httpd
- * Serves a tiny upload page at / and handles POST to /upload/{firmware|uboot}
+ * Serves the recovery page and handles upload and reboot POST requests.
  */
 
 #include <dm.h>
@@ -133,6 +133,7 @@ static u32 recv_off;
 static u32 recv_total;
 static int post_ok;
 static int flash_request;
+static bool reboot_post_pending;
 static volatile int reboot_request;
 /* Progress for /status polling */
 static volatile u32 prog_total; /* combined total for backward compat */
@@ -181,6 +182,7 @@ static void recovery_cancel_timeouts(void)
 {
 	sys_untimeout(reboot_delay_cb, NULL);
 	flash_request = 0;
+	reboot_post_pending = false;
 	reboot_request = 0;
 }
 
@@ -2727,45 +2729,49 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
                        u16_t http_request_len, int content_len, char *response_uri,
                        u16_t response_uri_len, u8_t *post_auto_wnd)
 {
-    (void)http_request; (void)http_request_len; (void)connection;
-    /*
-     * Throttle large uploads explicitly: XR1710G recovery accepts firmware
-     * images that are much larger than a typical lwIP POST body and manual
-     * window updates avoid over-optimistic receive windows.
-     */
-    if (post_auto_wnd)
-        *post_auto_wnd = 0;
+	bool reboot_uri = !strcmp(uri, "/reboot");
 
-    /*
-     * If a previous upload ended with a TCP error (RST/timeout), lwIP's
-     * http_err callback frees the http_state but never calls
-     * httpd_post_finished(), leaving post_ok stuck at 1. Recover from that
-     * stale state before deciding whether to accept the new upload.
-     *
-     * But do NOT touch the state if the previous upload actually completed
-     * (recv_off >= recv_total): httpd_post_finished() is waiting for the POST
-     * response to be acknowledged, and that callback still needs
-     * recv_base/recv_off/recv_total intact.
-     */
-    if (post_ok && !flash_request && !reboot_request && prog_phase <= 0) {
-        if (recv_total && (recv_off >= recv_total)) {
-            printf("httpd: rejecting upload, previous upload awaiting response ACK\n");
-            strlcpy(response_uri, "/fail.html", response_uri_len);
-            return ERR_ARG;
-        }
-        printf("httpd: clearing stale upload state (post_ok was set, "
-               "recv_off=%u recv_total=%u)\n", recv_off, recv_total);
-        post_ok = 0;
-        recv_off = 0;
-        recv_total = 0;
-    }
+	(void)http_request;
+	(void)http_request_len;
+	(void)connection;
+	/*
+	 * Throttle large uploads explicitly. Reboot has no request body, so keep
+	 * lwIP's automatic receive-window handling for that endpoint.
+	 */
+	if (post_auto_wnd)
+		*post_auto_wnd = reboot_uri ? 1 : 0;
 
-    if (post_ok || flash_request || reboot_request || prog_phase > 0) {
-        printf("httpd: rejecting upload while recovery flash is busy (phase=%d)\n",
-               prog_phase);
-        strlcpy(response_uri, "/fail.html", response_uri_len);
-        return ERR_ARG;
-    }
+	/*
+	 * Handle reboot before upload bookkeeping so a concurrent upload is
+	 * rejected without altering its receive state.
+	 */
+	if (reboot_uri) {
+		if (post_ok || flash_request || reboot_post_pending ||
+		    reboot_request || prog_phase > 0) {
+			printf("httpd: rejecting reboot while recovery is busy (phase=%d)\n",
+			       prog_phase);
+			strlcpy(response_uri, "/400.html", response_uri_len);
+			return ERR_ARG;
+		}
+		if (content_len != 0) {
+			printf("httpd: rejecting reboot request with %d-byte body\n",
+			       content_len);
+			strlcpy(response_uri, "/400.html", response_uri_len);
+			return ERR_ARG;
+		}
+
+		reboot_post_pending = true;
+		printf("httpd: reboot request accepted; waiting for response ACK\n");
+		return ERR_OK;
+	}
+
+	if (post_ok || flash_request || reboot_post_pending ||
+	    reboot_request || prog_phase > 0) {
+		printf("httpd: rejecting POST while recovery is busy (phase=%d)\n",
+		       prog_phase);
+		strlcpy(response_uri, "/400.html", response_uri_len);
+		return ERR_ARG;
+	}
 
     post_ok = 0;
     recovery_ubi_attach_error = 0;
@@ -2786,7 +2792,7 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
         if (recovery_parse_ubi_layout(uri)) {
             printf("httpd: rejecting unknown UBI layout in '%s'\n", uri);
             prog_phase = -1;
-            strlcpy(response_uri, "/fail.html", response_uri_len);
+	    strlcpy(response_uri, "/400.html", response_uri_len);
             return ERR_ARG;
         }
     } else if (!strncmp(uri, "/upload/uboot", 13) &&
@@ -2797,12 +2803,12 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
         current_target = TARGET_FIRMWARE;
         if (recovery_parse_ubi_layout(uri)) {
             prog_phase = -1;
-            strlcpy(response_uri, "/fail.html", response_uri_len);
+	    strlcpy(response_uri, "/400.html", response_uri_len);
             return ERR_ARG;
         }
     } else {
         prog_phase = -1;
-        strlcpy(response_uri, "/fail.html", response_uri_len);
+	strlcpy(response_uri, "/400.html", response_uri_len);
         return ERR_ARG;
     }
 
@@ -2831,7 +2837,7 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
                 printf("httpd: content_len %d exceeds allowed max %lu (target limit %lu, ofs 0x%llx)\n",
                        content_len, max, dts_max, (unsigned long long)tmpofs);
             }
-            strlcpy(response_uri, "/fail.html", response_uri_len);
+	    strlcpy(response_uri, "/400.html", response_uri_len);
             return ERR_ARG;
         }
     }
@@ -2861,7 +2867,7 @@ err_t httpd_post_begin(void *connection, const char *uri, const char *http_reque
             } else {
                 prog_phase = -1;
                 printf("httpd: no sufficient RAM for upload (%u bytes)\n", recv_total);
-                strlcpy(response_uri, "/fail.html", response_uri_len);
+		strlcpy(response_uri, "/400.html", response_uri_len);
                 return ERR_MEM;
             }
         }
@@ -2882,6 +2888,11 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p)
 {
 	struct pbuf *q;
 	u16_t recved = 0;
+
+	if (reboot_post_pending) {
+		pbuf_free(p);
+		return ERR_OK;
+	}
 
 	if (!post_ok) {
 		pbuf_free(p);
@@ -2913,13 +2924,19 @@ void httpd_post_finished(void *connection, char *response_uri, u16_t response_ur
 	bool upload_complete;
 
 	(void)connection;
+	if (reboot_post_pending) {
+		strlcpy(response_uri, "/ok", response_uri_len);
+		printf("httpd: reboot response ready; waiting for ACK\n");
+		return;
+	}
+
 	printf("httpd: post finished, %u/%u bytes received\n", recv_off, recv_total);
 	upload_complete = post_ok && recv_total && (recv_off >= recv_total);
 	if (upload_complete) {
 		strlcpy(response_uri, "/ok", response_uri_len);
 		printf("httpd: upload received; waiting for POST response ACK\n");
 	} else {
-		strlcpy(response_uri, "/fail.html", response_uri_len);
+		strlcpy(response_uri, "/400.html", response_uri_len);
 		post_ok = 0;
 		prog_phase = -1;
 	}
@@ -2929,6 +2946,20 @@ void httpd_post_finished(void *connection, char *response_uri, u16_t response_ur
 void httpd_post_response_complete(void *connection, err_t result)
 {
 	(void)connection;
+	if (reboot_post_pending) {
+		if (result != ERR_OK) {
+			printf("httpd: reboot response not acknowledged (%d); reboot cancelled\n",
+			       result);
+			reboot_post_pending = false;
+			return;
+		}
+
+		printf("httpd: reboot response acknowledged; rebooting in %dms\n",
+		       REBOOT_DELAY_MS);
+		reboot_request = 0;
+		sys_timeout(REBOOT_DELAY_MS, reboot_delay_cb, NULL);
+		return;
+	}
 
 	if (!post_ok || !recv_total || recv_off < recv_total)
 		return;

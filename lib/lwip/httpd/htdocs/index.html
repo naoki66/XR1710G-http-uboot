@@ -95,8 +95,27 @@ button,input,select{font:inherit;letter-spacing:0}
   background:var(--blue);
   box-shadow:0 0 0 4px rgba(40,120,227,.10);
 }
-.side-meta{
+.side-actions{
   margin-top:auto;
+  padding:20px 8px 0;
+  border-top:1px solid var(--line);
+}
+.reboot-button{
+  width:100%;
+  min-height:42px;
+  padding:0 12px;
+  border:1px solid #dfaaa4;
+  border-radius:7px;
+  color:#8b3b33;
+  background:#fff8f7;
+  cursor:pointer;
+  font-weight:700;
+  transition:color .16s ease,background .16s ease,border-color .16s ease;
+}
+.reboot-button:hover:not(:disabled){color:#722c25;border-color:#cf8e87;background:var(--red-soft)}
+.reboot-button:disabled{cursor:default;opacity:.5}
+.side-meta{
+  margin-top:16px;
   padding:20px 8px 0;
   border-top:1px solid var(--line);
   color:var(--muted);
@@ -310,6 +329,7 @@ button,input,select{font:inherit;letter-spacing:0}
   .nav-label{display:none}
   .nav{grid-template-columns:1fr 1fr;gap:8px}
   .nav-button{justify-content:center;font-size:13px}
+  .side-actions{margin-top:12px;padding:12px 0 0}
   .side-meta{display:none}
   .main{padding:18px 12px 24px}
 }
@@ -340,6 +360,9 @@ button,input,select{font:inherit;letter-spacing:0}
       <button class='nav-button active' type='button' data-target='firmware' aria-current='page'><span class='nav-dot'></span>Firmware Recovery</button>
       <button class='nav-button' type='button' data-target='uboot'><span class='nav-dot'></span>Update U-Boot</button>
     </nav>
+    <div class='side-actions'>
+      <button class='reboot-button' id='reboot-button' type='button'>Reboot to System</button>
+    </div>
     <div class='side-meta'>
       <strong>192.168.255.1</strong>
       <a class='version-link' href='https://github.com/naoki66/XR1710G-http-uboot/releases' target='_blank' rel='noopener'><span id='version'>Loading U-Boot version...</span></a>
@@ -468,6 +491,7 @@ var chooseButton=document.getElementById('choose-button');
 var fileName=document.getElementById('file-name');
 var fileHelp=document.getElementById('file-help');
 var uploadButton=document.getElementById('upload-button');
+var rebootButton=document.getElementById('reboot-button');
 var layoutBlock=document.getElementById('layout-block');
 var layoutSelect=document.getElementById('layout-select');
 var layoutHelp=document.getElementById('layout-help');
@@ -560,6 +584,7 @@ function setBusy(value){
   var buttons=document.querySelectorAll('.nav-button');
 	  for(var i=0;i<buttons.length;i++)buttons[i].disabled=value;
 	  layoutSelect.disabled=value;
+	  rebootButton.disabled=value;
   validateFile();
 }
 
@@ -605,6 +630,33 @@ function startCountdown(seconds){
     if(left>0)setTimeout(function(){tick(left-1)},1000);
   }
   tick(seconds);
+}
+
+function startRebootCountdown(seconds){
+  function tick(left){
+    var message=left>0
+      ?'Restarting into the system in '+left+' seconds.'
+      :'The device is restarting. Reconnect after the system finishes booting.';
+    setState('Rebooting','working',message);
+    if(left>0)setTimeout(function(){tick(left-1)},1000);
+  }
+  tick(seconds);
+}
+
+async function rebootToSystem(){
+  if(busy)return;
+  if(!window.confirm('Reboot the device and continue normal startup? Make sure the recovery button is released.'))return;
+  setBusy(true);
+  setState('Rebooting','working','Sending the reboot request.');
+  try{
+    var response=await fetch('/reboot',{method:'POST',body:'',cache:'no-store'});
+    await response.text();
+    if(!response.ok)throw new Error('reboot rejected');
+    startRebootCountdown(3);
+  }catch(error){
+    setBusy(false);
+    setState('Failed','error','The reboot request was not accepted. Try again.');
+  }
 }
 
 async function pollStatus(epoch){
@@ -710,6 +762,7 @@ layoutSelect.addEventListener('change',function(){
   resetProgress();
 });
 uploadButton.addEventListener('click',upload);
+rebootButton.addEventListener('click',rebootToSystem);
 
 (async function(){
   setTarget('firmware');

@@ -534,6 +534,32 @@ http_post_response_notify(struct http_state *hs, err_t result)
 }
 #endif /* LWIP_HTTPD_SUPPORT_POST && LWIP_HTTPD_POST_RESPONSE_ACK */
 
+#if LWIP_HTTPD_SUPPORT_POST
+static void
+http_post_connection_closed(struct http_state *hs)
+{
+  if (hs != NULL) {
+#if LWIP_HTTPD_POST_MANUAL_WND
+    if (hs->post_finished) {
+      return;
+    }
+#endif /* LWIP_HTTPD_POST_MANUAL_WND */
+    if ((hs->post_content_len_left != 0)
+#if LWIP_HTTPD_POST_MANUAL_WND
+        || ((hs->no_auto_wnd != 0) && (hs->unrecved_bytes != 0))
+#endif /* LWIP_HTTPD_POST_MANUAL_WND */
+       ) {
+#if LWIP_HTTPD_POST_MANUAL_WND
+      hs->post_finished = 1;
+#endif /* LWIP_HTTPD_POST_MANUAL_WND */
+      /* make sure the post code knows that the connection is closed */
+      http_uri_buf[0] = 0;
+      httpd_post_finished(hs, http_uri_buf, LWIP_HTTPD_URI_BUF_LEN);
+    }
+  }
+}
+#endif /* LWIP_HTTPD_SUPPORT_POST */
+
 /** Call tcp_write() in a loop trying smaller and smaller length
  *
  * @param pcb altcp_pcb to send
@@ -617,18 +643,8 @@ http_close_or_abort_conn(struct altcp_pcb *pcb, struct http_state *hs, u8_t abor
 #endif
 
 #if LWIP_HTTPD_SUPPORT_POST
-  if (hs != NULL) {
-    if ((hs->post_content_len_left != 0)
-#if LWIP_HTTPD_POST_MANUAL_WND
-        || ((hs->no_auto_wnd != 0) && (hs->unrecved_bytes != 0))
-#endif /* LWIP_HTTPD_POST_MANUAL_WND */
-       ) {
-      /* make sure the post code knows that the connection is closed */
-      http_uri_buf[0] = 0;
-      httpd_post_finished(hs, http_uri_buf, LWIP_HTTPD_URI_BUF_LEN);
-    }
-  }
-#endif /* LWIP_HTTPD_SUPPORT_POST*/
+  http_post_connection_closed(hs);
+#endif /* LWIP_HTTPD_SUPPORT_POST */
 
 
   altcp_arg(pcb, NULL);
@@ -2519,6 +2535,9 @@ http_err(void *arg, err_t err)
   if (hs != NULL) {
 #if LWIP_HTTPD_SUPPORT_POST && LWIP_HTTPD_POST_RESPONSE_ACK
     http_post_response_notify(hs, err);
+#endif
+#if LWIP_HTTPD_SUPPORT_POST
+    http_post_connection_closed(hs);
 #endif
     http_state_free(hs);
   }

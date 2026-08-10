@@ -123,7 +123,34 @@ class RecoveryHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        content_length = int(self.headers.get('Content-Length', 0))
+        content_length_header = self.headers.get('Content-Length')
+        try:
+            content_length = int(content_length_header or 0)
+        except ValueError:
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        if path == '/reboot':
+            with prog_lock:
+                reboot_busy = prog_phase > 0
+            if parsed.query or content_length_header is None or content_length != 0 or reboot_busy:
+                body = b'Bad Request'
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            print('[mock] reboot requested; normal startup simulated')
+            body = b'OK'
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         if path.startswith('/upload/firmware'):
             layout = query.get('layout', ['2.0'])[0]
@@ -211,6 +238,7 @@ def main():
     print(f"  - GET  /status   -> progress status")
     print(f"  - POST /upload/firmware?layout=2.0")
     print(f"  - POST /upload/uboot")
+    print(f"  - POST /reboot")
     print()
     try:
         server.serve_forever()
