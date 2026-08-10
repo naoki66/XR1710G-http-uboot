@@ -151,10 +151,10 @@ jobs:
           1. Connect PC to 10GbE port (DHCP mode)
           2. Hold reset button until LED shows recovery pattern
           3. Open http://192.168.255.1
-          4. Select \`uboot\` target, upload **flash-slot.bin**"
+          4. Select \`uboot\` target, upload **flash-slot.bin**
 
           ## Donate
 
           如果您觉得对您有帮助，请我喝杯咖啡吧，让我更有动力持续更新。
 
-          ![Donate](https://github.com/naoki66/XR1710G-http-uboot/raw/${TAG}/c6ea388c976395326514814f80d512d5.png)
+          ![Donate](https://github.com/naoki66/XR1710G-http-uboot/raw/${TAG}/c6ea388c976395326514814f80d512d5.png)"
