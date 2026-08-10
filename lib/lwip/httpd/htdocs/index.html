@@ -728,9 +728,9 @@ uploadButton.addEventListener('click',upload);
 	        }
 	      }
 	      if(buildDate&&hashMatch){
-	        versionText='XR1710G HTTP Recovery '+buildDate+' '+hashMatch[1];
+	        versionText='XR1710G U-Boot-'+buildDate+'-g'+hashMatch[1];
 	      }else{
-	        versionText=data.u_boot.replace(/^U-Boot\s+\S+-XR1710G-/,'XR1710G-U-Boot-');
+	        versionText=data.u_boot.replace(/^U-Boot\s+(?:[\d.]+-)?XR1710G-/,'XR1710G U-Boot-').replace(/ \(.*\)$/,'');
 	      }
 	    }
 	    if(versionText){

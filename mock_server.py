@@ -8,7 +8,7 @@ import urllib.parse
 
 HTDOCS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib', 'lwip', 'httpd', 'htdocs')
 
-MOCK_UBOOT_VERSION = "U-Boot 2026.07-XR1710G-2026-8-8-gfc5d785865fb (Aug 10 2026 - local preview)"
+MOCK_UBOOT_VERSION = "U-Boot XR1710G-2026-8-10-gfc5d785865fb (Aug 10 2026 - local preview)"
 MOCK_RECOVERY_VERSION = "2026-8-8"
 MOCK_CREDIT = "Thanks to YYH2913"
 MOCK_DETECTED_LAYOUT = "2.0"
