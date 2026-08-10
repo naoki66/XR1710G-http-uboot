@@ -238,12 +238,6 @@ button,input,select{font:inherit;letter-spacing:0}
 }
 .file-help.ok{color:var(--green)}
 .file-help.error{color:var(--red)}
-.file-help.critical-limit{
-  color:var(--red);
-  font-size:16px;
-  font-weight:800;
-  line-height:1.5;
-}
 .upload-wrap{display:flex;justify-content:center;margin-top:20px}
 .upload-button{
   min-width:160px;
@@ -487,7 +481,7 @@ var profiles={
     target:'SPI-NAND @ 0x600000',
     scope:'Write the 1 MiB chainloader slot',
     preserve:'All UBI firmware volumes and configuration data',
-    help:'U-Boot images must not exceed 1 MiB!',
+    help:'U-Boot images must not exceed 1 MiB',
     action:'Upload and Update',
     notices:['Do not power off or reboot the device during the U-Boot update!','The image format is validated before writing.','UBI firmware volumes are not modified.']
   }
@@ -564,7 +558,7 @@ function formatBytes(bytes){
 function fileError(){
   if(!selectedFile)return'';
   if(activeTarget==='firmware'&&selectedFile.size<1024*1024)return'Firmware images must be at least 1 MiB.';
-  if(activeTarget==='uboot'&&selectedFile.size>1024*1024)return'U-Boot images must not exceed 1 MiB!';
+  if(activeTarget==='uboot'&&selectedFile.size>1024*1024)return'U-Boot images must not exceed 1 MiB.';
   return'';
 }
 
@@ -589,7 +583,6 @@ function validateFile(){
       statusMessage.textContent='Ready to upload.';
     }
   }
-  if(activeTarget==='uboot'&&(!selectedFile||error))fileHelp.classList.add('critical-limit');
   uploadButton.disabled=busy||!selectedFile||!!error;
 }
 
