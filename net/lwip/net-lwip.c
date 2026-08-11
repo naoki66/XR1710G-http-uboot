@@ -79,16 +79,27 @@ static void net_lwip_run_recovery_poll_hook(void)
 #endif
 
 #if defined(CONFIG_HTTPD_RECOVERY)
+#define RECOVERY_DHCP_MAX_VLAN_TAGS 2
+#define ETHTYPE_8021AD 0x88a8U
+
+static bool net_lwip_recovery_vlan_type(u16_t eth_type)
+{
+	return eth_type == ETHTYPE_VLAN || eth_type == ETHTYPE_QINQ ||
+	       eth_type == ETHTYPE_8021AD;
+}
+
 static bool net_lwip_dispatch_recovery_dhcp(const uchar *packet, int len)
 {
 	const struct eth_hdr *eth;
+	const struct eth_vlan_hdr *vlan;
 	const struct ip_hdr *ip;
 	const struct udp_hdr *udp;
 	const uchar *payload;
 	struct pbuf *pbuf;
 	ip_addr_t src_addr;
 	ip4_addr_t src_ip;
-	int ip_hlen, udp_len, payload_len, offset;
+	u16_t eth_type, ip_len, ip_offset;
+	int ip_hlen, udp_len, payload_len, offset, vlan_tags;
 
 	if (!recovery_dhcp_hook ||
 	    len < (int)(SIZEOF_ETH_HDR + sizeof(struct ip_hdr) +
@@ -96,15 +107,41 @@ static bool net_lwip_dispatch_recovery_dhcp(const uchar *packet, int len)
 		return false;
 
 	eth = (const struct eth_hdr *)packet;
-	if (lwip_ntohs(eth->type) != ETHTYPE_IP)
+	eth_type = lwip_ntohs(eth->type);
+	offset = SIZEOF_ETH_HDR;
+	for (vlan_tags = 0;
+	     vlan_tags < RECOVERY_DHCP_MAX_VLAN_TAGS &&
+	     net_lwip_recovery_vlan_type(eth_type);
+	     vlan_tags++) {
+		if (len < offset + SIZEOF_VLAN_HDR)
+			return false;
+
+		vlan = (const struct eth_vlan_hdr *)(packet + offset);
+		/* Only priority-tagged frames can be answered without VLAN TX. */
+		if (lwip_ntohs(vlan->prio_vid) & 0x0fff)
+			return false;
+
+		eth_type = lwip_ntohs(vlan->tpid);
+		offset += SIZEOF_VLAN_HDR;
+	}
+
+	if (eth_type != ETHTYPE_IP ||
+	    len < offset + (int)(sizeof(*ip) + sizeof(*udp)))
 		return false;
 
-	ip = (const struct ip_hdr *)(packet + SIZEOF_ETH_HDR);
-	if (IPH_PROTO(ip) != IP_PROTO_UDP)
-		return false;
-
+	ip = (const struct ip_hdr *)(packet + offset);
 	ip_hlen = IPH_HL_BYTES(ip);
-	offset = SIZEOF_ETH_HDR + ip_hlen;
+	if (IPH_V(ip) != 4 || ip_hlen < IP_HLEN || ip_hlen > IP_HLEN_MAX ||
+	    IPH_PROTO(ip) != IP_PROTO_UDP)
+		return false;
+
+	ip_len = lwip_ntohs(IPH_LEN(ip));
+	ip_offset = lwip_ntohs(IPH_OFFSET(ip));
+	if (ip_offset & (IP_MF | IP_OFFMASK) ||
+	    ip_len < ip_hlen + sizeof(*udp) || ip_len > len - offset)
+		return false;
+
+	offset += ip_hlen;
 	if (len < offset + (int)sizeof(*udp))
 		return false;
 
@@ -114,12 +151,11 @@ static bool net_lwip_dispatch_recovery_dhcp(const uchar *packet, int len)
 		return false;
 
 	udp_len = lwip_ntohs(udp->len);
-	if (udp_len < (int)sizeof(*udp))
+	if (udp_len < (int)sizeof(*udp) || udp_len > ip_len - ip_hlen ||
+	    len < offset + udp_len)
 		return false;
 
 	payload_len = udp_len - sizeof(*udp);
-	if (len < offset + udp_len)
-		payload_len = len - offset - sizeof(*udp);
 	if (payload_len <= 0)
 		return false;
 

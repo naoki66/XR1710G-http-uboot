@@ -1,27 +1,67 @@
 name: Build U-Boot for XR1710G
 
 on:
+  push:
+    branches:
+      - "**"
   workflow_dispatch:
+    inputs:
+      release_type:
+        description: Build only, create a pre-release, or create a release
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - pre-release
+          - release
 
 env:
   CROSS_COMPILE: aarch64-linux-gnu-
   DEFCONFIG: xr1710g_defconfig
   ARCH: arm
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: Build U-Boot
     runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.slotname.outputs.artifact_name }}
+      build_mode: ${{ steps.mode.outputs.value }}
+      commit: ${{ steps.version.outputs.commit }}
+      fit_name: ${{ steps.slotname.outputs.fit_name }}
+      release_date: ${{ steps.version.outputs.release_date }}
+      slot_name: ${{ steps.slotname.outputs.slot_name }}
+      tag: ${{ steps.slotname.outputs.tag }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Select build mode
+        id: mode
+        env:
+          REQUESTED_MODE: ${{ github.event.inputs.release_type }}
+        run: |
+          MODE="${REQUESTED_MODE:-test}"
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            MODE="test"
+          fi
+          case "$MODE" in
+            test|pre-release|release) ;;
+            *)
+              echo "Unsupported build mode: $MODE" >&2
+              exit 1
+              ;;
+          esac
+          echo "value=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Build mode: $MODE"
 
       - name: Install dependencies
         run: |
@@ -82,10 +122,12 @@ jobs:
       - name: Generate flash-slot.bin with version name
         id: slotname
         run: |
+          ARTIFACT_NAME="xr1710g-uboot-${{ steps.version.outputs.date }}-${{ steps.version.outputs.commit }}"
           SLOT_NAME="xr1710g-uboot-${{ steps.version.outputs.release_date }}-${{ steps.version.outputs.commit }}-flash-slot.bin"
           FIT_NAME="xr1710g-uboot-${{ steps.version.outputs.release_date }}-${{ steps.version.outputs.commit }}-chainloader.itb"
           cp out/xr1710g-chainloader-slot.bin "out/${SLOT_NAME}"
           cp out/xr1710g-chainloader.itb "out/${FIT_NAME}"
+          echo "artifact_name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
           echo "slot_name=${SLOT_NAME}" >> $GITHUB_OUTPUT
           echo "fit_name=${FIT_NAME}" >> $GITHUB_OUTPUT
           echo "tag=${{ steps.version.outputs.release_date }}-${{ steps.version.outputs.commit }}" >> $GITHUB_OUTPUT
@@ -106,7 +148,8 @@ jobs:
           echo "Build date: $(date)" > build-output/build-info.txt
           echo "Commit: $(git rev-parse HEAD)" >> build-output/build-info.txt
           echo "Commit short: $(git rev-parse --short HEAD)" >> build-output/build-info.txt
-          echo "Branch: $(git branch --show-current)" >> build-output/build-info.txt
+          echo "Ref: ${GITHUB_REF_NAME}" >> build-output/build-info.txt
+          echo "Build mode: ${{ steps.mode.outputs.value }}" >> build-output/build-info.txt
           echo "U-Boot version: ${{ steps.version.outputs.version }}" >> build-output/build-info.txt
           echo "" >> build-output/build-info.txt
           echo "Flash slot image: ${{ steps.slotname.outputs.slot_name }}" >> build-output/build-info.txt
@@ -117,24 +160,53 @@ jobs:
           sha256sum "out/${{ steps.slotname.outputs.fit_name }}" >> build-output/build-info.txt
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
-          name: xr1710g-uboot-${{ steps.version.outputs.date }}-${{ steps.version.outputs.commit }}
+          name: ${{ steps.slotname.outputs.artifact_name }}
           path: build-output/
+          if-no-files-found: error
           retention-days: 30
 
-      - name: Create GitHub Release
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.build.outputs.build_mode != 'test' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: release-output
+
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_MODE: ${{ needs.build.outputs.build_mode }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_TITLE: XR1710G U-Boot-${{ needs.build.outputs.release_date }}-g${{ needs.build.outputs.commit }}
+          SLOT_NAME: ${{ needs.build.outputs.slot_name }}
+          FIT_NAME: ${{ needs.build.outputs.fit_name }}
         run: |
-          TAG="${{ steps.slotname.outputs.tag }}"
-          SLOT_SHA=$(sha256sum "out/${{ steps.slotname.outputs.slot_name }}" | awk '{print $1}')
-          FIT_SHA=$(sha256sum "out/${{ steps.slotname.outputs.fit_name }}" | awk '{print $1}')
-          gh release create "$TAG" \
-            "out/${{ steps.slotname.outputs.slot_name }}" \
-            "out/${{ steps.slotname.outputs.fit_name }}" \
-            --title "XR1710G U-Boot-${{ steps.version.outputs.release_date }}-g${{ steps.version.outputs.commit }}" \
-            --notes "Automated build from commit ${{ steps.version.outputs.commit }}
+          SLOT_PATH="release-output/${SLOT_NAME}"
+          FIT_PATH="release-output/${FIT_NAME}"
+          for FILE in "$SLOT_PATH" "$FIT_PATH"; do
+            if [ ! -f "$FILE" ]; then
+              echo "Release asset not found: $FILE" >&2
+              exit 1
+            fi
+          done
+
+          SLOT_SHA=$(sha256sum "$SLOT_PATH" | awk '{print $1}')
+          FIT_SHA=$(sha256sum "$FIT_PATH" | awk '{print $1}')
+          NOTES_FILE=$(mktemp)
+          cat > "$NOTES_FILE" <<EOF
+          Automated build from commit ${{ needs.build.outputs.commit }}
+
+          Release channel: ${RELEASE_MODE}
 
           ## Files
 
@@ -143,8 +215,8 @@ jobs:
 
           ## SHA256
 
-          ${SLOT_SHA}  ${{ steps.slotname.outputs.slot_name }}
-          ${FIT_SHA}  ${{ steps.slotname.outputs.fit_name }}
+          ${SLOT_SHA}  ${SLOT_NAME}
+          ${FIT_SHA}  ${FIT_NAME}
 
           ## Flash via HTTP Recovery
 
@@ -157,4 +229,37 @@ jobs:
 
           如果您觉得对您有帮助，请我喝杯咖啡吧，让我更有动力持续更新。
 
-          ![Donate](https://github.com/naoki66/XR1710G-http-uboot/raw/${TAG}/c6ea388c976395326514814f80d512d5.png)"
+          ![Donate](https://github.com/naoki66/XR1710G-http-uboot/raw/${RELEASE_TAG}/c6ea388c976395326514814f80d512d5.png)
+          EOF
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            if [ "$RELEASE_MODE" = "pre-release" ]; then
+              gh release edit "$RELEASE_TAG" \
+                --target "$GITHUB_SHA" \
+                --title "$RELEASE_TITLE" \
+                --notes-file "$NOTES_FILE" \
+                --prerelease \
+                --latest=false
+            else
+              gh release edit "$RELEASE_TAG" \
+                --target "$GITHUB_SHA" \
+                --title "$RELEASE_TITLE" \
+                --notes-file "$NOTES_FILE" \
+                --prerelease=false \
+                --latest
+            fi
+            gh release upload "$RELEASE_TAG" "$SLOT_PATH" "$FIT_PATH" --clobber
+          elif [ "$RELEASE_MODE" = "pre-release" ]; then
+            gh release create "$RELEASE_TAG" "$SLOT_PATH" "$FIT_PATH" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --notes-file "$NOTES_FILE" \
+              --prerelease \
+              --latest=false
+          else
+            gh release create "$RELEASE_TAG" "$SLOT_PATH" "$FIT_PATH" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --notes-file "$NOTES_FILE" \
+              --latest
+          fi

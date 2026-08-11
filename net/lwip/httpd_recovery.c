@@ -4,6 +4,7 @@
  * Serves the recovery page and handles upload and reboot POST requests.
  */
 
+#include <airoha_eth.h>
 #include <dm.h>
 #include <dm/ofnode.h>
 #include <env.h>
@@ -53,8 +54,6 @@ DECLARE_GLOBAL_DATA_PTR;
 int xr1710g_sync_factory(void);
 int xr1710g_sync_factory_part(const char *part);
 const char *xr1710g_detect_ubi_version(void);
-ulong airoha_recovery_get_lan_activity_ms(void);
-void airoha_recovery_poll_link(struct udevice *dev);
 
 /*
  * Upload buffer
@@ -986,12 +985,13 @@ recovery_dhcp_classify_request(struct recovery_dhcp_server *srv,
 
 static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 				    const struct dhcp_msg *req,
-				    u8 message_type)
+				    u8 message_type, bool assign_address)
 {
 	struct pbuf *p;
 	struct dhcp_msg *reply;
 	ip_addr_t src_addr;
 	ip_addr_t reply_addr;
+	bool include_config = message_type != DHCP_NAK;
 	int opt_len;
 	err_t err;
 
@@ -1009,9 +1009,10 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 	reply->xid = req->xid;
 	reply->secs = req->secs;
 	reply->flags = req->flags | lwip_htons(0x8000);
-	if (message_type != DHCP_NAK)
+	if (assign_address)
 		reply->yiaddr.addr = srv->client_ip.addr;
-	reply->siaddr.addr = srv->server_ip.addr;
+	if (assign_address)
+		reply->siaddr.addr = srv->server_ip.addr;
 	reply->giaddr = req->giaddr;
 	memcpy(reply->chaddr, req->chaddr, DHCP_CHADDR_LEN);
 	reply->cookie = PP_HTONL(DHCP_MAGIC_COOKIE);
@@ -1023,7 +1024,7 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 	opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
 					       DHCP_OPTION_SERVER_ID,
 					       &srv->server_ip);
-	if (message_type != DHCP_NAK) {
+	if (assign_address) {
 		opt_len = recovery_dhcp_put_u32_option(reply->options, opt_len,
 						       DHCP_OPTION_LEASE_TIME,
 						       RECOVERY_DHCP_LEASE_SECS);
@@ -1033,6 +1034,8 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 		opt_len = recovery_dhcp_put_u32_option(reply->options, opt_len,
 						       DHCP_OPTION_T2,
 						       RECOVERY_DHCP_LEASE_SECS * 7 / 8);
+	}
+	if (include_config) {
 		opt_len = recovery_dhcp_put_ip4_option(reply->options, opt_len,
 						       DHCP_OPTION_SUBNET_MASK,
 						       &srv->netmask);
@@ -1067,7 +1070,7 @@ static int recovery_dhcp_send_reply(struct recovery_dhcp_server *srv,
 		       message_type == DHCP_ACK ? "ACK" :
 		       message_type == DHCP_NAK ? "NAK" : "reply",
 		       req->chaddr,
-		       message_type != DHCP_NAK ?
+		       assign_address ?
 		       ip4addr_ntoa(&srv->client_ip) : "n/a");
 	} else {
 		printf("DHCP: send failed, err=%d\n", err);
@@ -1090,6 +1093,9 @@ static void recovery_dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
 	if (!p)
 		return;
+
+	if (!airoha_recovery_dhcp_rx_allowed(srv->netif->state))
+		goto out;
 
 	if (port != LWIP_IANA_PORT_DHCP_CLIENT)
 		goto out;
@@ -1116,16 +1122,16 @@ static void recovery_dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 	switch (message_type) {
 	case DHCP_DISCOVER:
 		printf("DHCP: DISCOVER from %pM\n", req->chaddr);
-		recovery_dhcp_send_reply(srv, req, DHCP_OFFER);
+		recovery_dhcp_send_reply(srv, req, DHCP_OFFER, true);
 		break;
 	case DHCP_REQUEST:
 		printf("DHCP: REQUEST from %pM\n", req->chaddr);
 		switch (recovery_dhcp_classify_request(srv, req, pkt, pkt_len)) {
 		case RECOVERY_DHCP_REQUEST_ACK:
-			recovery_dhcp_send_reply(srv, req, DHCP_ACK);
+			recovery_dhcp_send_reply(srv, req, DHCP_ACK, true);
 			break;
 		case RECOVERY_DHCP_REQUEST_NAK:
-			recovery_dhcp_send_reply(srv, req, DHCP_NAK);
+			recovery_dhcp_send_reply(srv, req, DHCP_NAK, false);
 			break;
 		default:
 			break;
@@ -1133,7 +1139,7 @@ static void recovery_dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 		break;
 	case DHCP_INFORM:
 		printf("DHCP: INFORM from %pM\n", req->chaddr);
-		recovery_dhcp_send_reply(srv, req, DHCP_ACK);
+		recovery_dhcp_send_reply(srv, req, DHCP_ACK, false);
 		break;
 	default:
 		printf("DHCP: unknown msg type %u from %pM\n",
@@ -3249,6 +3255,7 @@ int run_http_recovery(void)
 	       ip4addr_ntoa(netif_ip4_addr(netif)));
 	if (use_status_leds)
 		net_lwip_set_recovery_poll_hook(recovery_status_led_service, &status_leds);
+	airoha_recovery_restart_links(udev);
 
 	while (1) {
 		if (tstc()) {
@@ -3260,8 +3267,8 @@ int run_http_recovery(void)
 			}
 		}
 		/* net_lwip_rx() already runs sys_check_timeouts(). */
-		net_lwip_rx(udev, netif);
 		airoha_recovery_poll_link(udev);
+		net_lwip_rx(udev, netif);
 		if (use_status_leds)
 			recovery_status_led_poll(&status_leds);
 		recovery_led_poll(&leds);

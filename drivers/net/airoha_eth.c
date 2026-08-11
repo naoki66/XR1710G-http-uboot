@@ -9,6 +9,7 @@
  */
 
 #include <env.h>
+#include <airoha_eth.h>
 #include <command.h>
 #include <dm.h>
 #include <dm/devres.h>
@@ -259,6 +260,8 @@
 #define AIROHA_RECOVERY_SWITCH_DOWN_SETTLE_MS 50
 #define AIROHA_RECOVERY_FDB_MOVE_FLUSH_MS 500
 #define AIROHA_RECOVERY_LINK_POLL_MS 1000
+#define AIROHA_RECOVERY_LINK_RETRY_MS 3000
+#define AIROHA_RECOVERY_PHY_POWER_SETTLE_MS 10
 #define AIROHA_RECOVERY_MDIO_RETRIES 3
 #define AIROHA_RECOVERY_MDIO_RETRY_US 1000
 #define AIROHA_RECOVERY_QDMA_STOP_TIMEOUT_US 50000
@@ -615,6 +618,8 @@ struct airoha_queue {
 	uchar *rx_buf;
 	uchar *tx_buf;
 	u16 head;
+	bool rx_head_aligned;
+	bool rx_drop_chain;
 	bool pending;
 
 	int ndesc;
@@ -677,8 +682,16 @@ struct airoha_eth {
 	u8 last_rx_fport;
 	bool gdm4_pcs_ready;
 	bool gdm4_link_up;
+	bool gdm4_copper_link_up;
+	bool recovery_link_poll_started;
+	u8 recovery_lan_wake_pending;
+	bool rtl8261_phy5_wake_pending;
+	bool rtl8261_phy8_wake_pending;
 	u16 gdm4_link_speed;
-	bool rtl8261_init_done;
+	ulong recovery_last_link_poll_ms;
+	ulong recovery_last_wake_retry_ms;
+	ulong gdm4_last_retry_ms;
+	u8 rtl8261_init_mask;
 	bool rtl8261_phy5_pnswap_tx;
 	bool rtl8261_phy5_pnswap_rx;
 	bool rtl8261_phy8_pnswap_tx;
@@ -789,6 +802,8 @@ enum {
 
 #define RTL8261_PHY5_ADDR 5
 #define RTL8261_PHY8_ADDR 8
+#define RTL8261_PHY5_INIT BIT(0)
+#define RTL8261_PHY8_INIT BIT(1)
 #define RTL8261_PHY_ID2 MII_PHYSID2
 #define RTL8261_PHY_ID2_EXPECT 0xcaf3
 #define RTL8261_MMD_VEND1 30
@@ -805,7 +820,6 @@ enum {
 	(0x8800 | (((page) & 0x3f) | (((reg) & 0x1f) << 6)))
 #define RTL8261_PHY_SDS_XR1710G_MODE 0x88c6
 #define RTL8261_PHY_10G_CTRL 0x0000
-#define RTL8261_PHY_10G_AN_DIS BIT(11)
 #define RTL8261_PMA_STATUS1 0x0001
 #define RTL8261_PMA_MGBT_STATUS 0x0081
 #define RTL8261_PMA_MGBT_PAIR_SWAP 0x0082
@@ -932,6 +946,7 @@ static int airoha_rtl8261_serdes_autoneg_set(struct airoha_eth *eth,
 static int airoha_rtl8261_serdes_mode_update(struct airoha_eth *eth,
 					     int phy_addr);
 static void airoha_eth_gdm4_apply_runtime_phy_cfg(struct airoha_eth *eth);
+static void airoha_gdm4_ensure_ready(struct airoha_eth *eth);
 
 static void airoha_clrsetbits_le32(uintptr_t addr, u32 clear, u32 set)
 {
@@ -1494,16 +1509,22 @@ static void airoha_recovery_flush_fdb_on_port_move(struct airoha_eth *eth,
 	airoha_recovery_fdb_flush_ms = get_timer(0);
 }
 
-static u32 airoha_switch_recovery_pmcr(bool enable)
+static u32 airoha_switch_recovery_pmcr(bool enable, bool fixed_link)
 {
+	u32 pmcr;
+
 	if (!enable)
 		return SWITCH_IPG_CFG_SHORT | SWITCH_MAC_MODE |
 		       SWITCH_FORCE_MODE;
 
-	return SWITCH_IPG_CFG_SHORT | SWITCH_MAC_MODE | SWITCH_FORCE_MODE |
-	       SWITCH_MAC_TX_EN | SWITCH_MAC_RX_EN | SWITCH_BKOFF_EN |
-	       SWITCH_BKPR_EN | SWITCH_FORCE_RX_FC | SWITCH_FORCE_TX_FC |
-	       SWITCH_FORCE_SPD_1000 | SWITCH_FORCE_DPX | SWITCH_FORCE_LNK;
+	pmcr = SWITCH_IPG_CFG_SHORT | SWITCH_MAC_MODE | SWITCH_MAC_TX_EN |
+	       SWITCH_MAC_RX_EN | SWITCH_BKOFF_EN | SWITCH_BKPR_EN;
+	if (fixed_link)
+		pmcr |= SWITCH_FORCE_MODE | SWITCH_FORCE_RX_FC |
+			SWITCH_FORCE_TX_FC | SWITCH_FORCE_SPD_1000 |
+			SWITCH_FORCE_DPX | SWITCH_FORCE_LNK;
+
+	return pmcr;
 }
 
 static void airoha_switch_recovery_program_ports(struct airoha_eth *eth,
@@ -1517,11 +1538,12 @@ static void airoha_switch_recovery_program_ports(struct airoha_eth *eth,
 		return;
 
 	airoha_switch_wr(eth, SWITCH_PMCR(AIROHA_RECOVERY_SWITCH_CPU_PORT),
-			 airoha_switch_recovery_pmcr(enable));
+			 airoha_switch_recovery_pmcr(enable, true));
+	/* User ports follow the speed and duplex reported by PHY auto-poll. */
 	airoha_switch_wr(eth, SWITCH_PMCR(1),
-			 airoha_switch_recovery_pmcr(enable));
+			 airoha_switch_recovery_pmcr(enable, false));
 	airoha_switch_wr(eth, SWITCH_PMCR(2),
-			 airoha_switch_recovery_pmcr(enable));
+			 airoha_switch_recovery_pmcr(enable, false));
 
 	for (port = 0; port <= AIROHA_RECOVERY_SWITCH_CPU_PORT; port++) {
 		u32 matrix = 0;
@@ -1636,12 +1658,41 @@ static bool airoha_recovery_port_is_1g(void)
 			!strcmp(port, "lan2") || !strcmp(port, "lan3"));
 }
 
+static bool airoha_recovery_port_is_wan(void)
+{
+	const char *port = env_get("recovery_port");
+
+	return port && (!strcmp(port, "2") || !strcmp(port, "wan"));
+}
+
 static bool airoha_recovery_dual_service_enabled(void)
 {
 	const char *port = env_get("recovery_port");
 
 	return !port || !*port || !strcmp(port, "auto") ||
 	       !strcmp(port, "both") || !strcmp(port, "dual");
+}
+
+bool airoha_recovery_dhcp_rx_allowed(struct udevice *dev)
+{
+	struct airoha_eth *eth;
+
+	if (!dev)
+		return false;
+
+	eth = dev_get_priv(dev);
+	if (!eth || !eth->last_rx_valid)
+		return false;
+
+	if (airoha_recovery_port_is_wan())
+		return eth->last_rx_fport == 2;
+	if (airoha_recovery_port_is_10g())
+		return eth->last_rx_fport == 4;
+	if (airoha_recovery_port_is_1g())
+		return eth->last_rx_fport == 1;
+
+	/* Auto, dual and unknown modes never accept DHCP from the WAN port. */
+	return eth->last_rx_fport == 1 || eth->last_rx_fport == 4;
 }
 
 static bool airoha_recovery_accept_gdm4_rx(void)
@@ -1811,27 +1862,41 @@ static bool airoha_gdm4_loopback_enabled(struct airoha_eth *eth)
 	bool loopback = false;
 
 	(void)eth;
+	if (airoha_recovery_port_is_wan())
+		return false;
 
 	/*
 	 * GDM2-to-GDM4 loopback is an optional 10G experiment. Keep it disabled
 	 * for normal recovery unless gdm4_loopback is explicitly enabled; the
 	 * CDM2/QDMA1 selection remains separately controlled by gdm4_cdm2.
+	 * An explicit WAN selection always owns GDM2 and overrides loopback.
 	 */
 	airoha_env_override_bool("gdm4_loopback", &loopback);
 
 	return loopback;
 }
 
+static u32 airoha_recovery_gdm2_fwd_port(struct airoha_eth *eth)
+{
+	if (airoha_gdm4_loopback_enabled(eth))
+		return FE_PSE_PORT_GDM4;
+
+	return airoha_recovery_port_is_wan() ?
+	       FE_PSE_PORT_PPE1 : FE_PSE_PORT_DROP;
+}
+
 static void airoha_gdm4_update_loopback(struct airoha_eth *eth)
 {
-	if (airoha_gdm4_loopback_enabled(eth)) {
+	u32 gdm2_fwd_port = airoha_recovery_gdm2_fwd_port(eth);
+
+	if (gdm2_fwd_port == FE_PSE_PORT_GDM4) {
 		/*
 		 * Mirror Linux GDM4/XSI bring-up on EN7581: enable GDM2
 		 * loopback and forward that traffic to GDM4, otherwise the
 		 * external serdes port never reaches the FE ingress path.
 		 */
 		airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(2),
-					    FE_PSE_PORT_GDM4);
+						    gdm2_fwd_port);
 		airoha_fe_clear(eth, REG_GDM_FWD_CFG(2), GDM_STRIP_CRC);
 		airoha_fe_wr(eth, REG_GDM_TXCHN_EN(2), 0xffffffff);
 		airoha_fe_wr(eth, REG_GDM_RXCHN_EN(2), 0xffff);
@@ -1853,11 +1918,11 @@ static void airoha_gdm4_update_loopback(struct airoha_eth *eth)
 		airoha_fe_wr(eth, REG_GDM_TXCHN_EN(2), 0);
 		airoha_fe_wr(eth, REG_GDM_RXCHN_EN(2), 0);
 		airoha_fe_clear(eth, REG_GDM_LPBK_CFG(2),
-				LPBK_CHAN_MASK | LPBK_MODE_MASK |
-					LBK_GAP_MODE_MASK | LBK_LEN_MODE_MASK |
-					LBK_CHAN_MODE_MASK | LPBK_EN_MASK);
+					LPBK_CHAN_MASK | LPBK_MODE_MASK |
+						LBK_GAP_MODE_MASK | LBK_LEN_MODE_MASK |
+						LBK_CHAN_MODE_MASK | LPBK_EN_MASK);
 		airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(2),
-					    FE_PSE_PORT_PPE1);
+						    gdm2_fwd_port);
 	}
 }
 
@@ -1922,7 +1987,7 @@ static void airoha_gdm4_update_cpu_path(struct airoha_eth *eth)
 			      WAN1_EN_MASK | WAN1_MASK | WAN0_MASK,
 			      FIELD_PREP(WAN0_MASK, src_port));
 		airoha_fe_rmw(eth, REG_SP_DFT_CPORT(src_port >> 3), src_port_mask,
-			      FE_PSE_PORT_CDM2 << (src_port_slot << 2));
+			      sp_cport << (src_port_slot << 2));
 		airoha_fe_rmw(eth, REG_SRC_PORT_FC_MAP6,
 			      FC_ID_OF_SRC_PORT24_MASK,
 			      FIELD_PREP(FC_ID_OF_SRC_PORT24_MASK, 2));
@@ -1935,6 +2000,14 @@ static void airoha_gdm4_update_cpu_path(struct airoha_eth *eth)
 	 * active CDM/QDMA path. Direct GDM4->CDM1 can leave packets counted by
 	 * GDM4 MIBs but not delivered to QDMA after repeated recovery restarts.
 	 */
+	airoha_fe_rmw(eth, REG_PPE_DFT_CPORT(0, FE_PSE_PORT_GDM2),
+		      DFT_CPORT_MASK(FE_PSE_PORT_GDM2),
+		      FIELD_PREP(DFT_CPORT_MASK(FE_PSE_PORT_GDM2),
+				 FE_PSE_PORT_CDM1));
+	airoha_fe_rmw(eth, REG_PPE_DFT_CPORT(1, FE_PSE_PORT_GDM2),
+		      DFT_CPORT_MASK(FE_PSE_PORT_GDM2),
+		      FIELD_PREP(DFT_CPORT_MASK(FE_PSE_PORT_GDM2),
+				 FE_PSE_PORT_CDM1));
 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(4),
 				    FE_PSE_PORT_PPE1);
 	airoha_fe_rmw(eth, REG_PPE_DFT_CPORT(0, FE_PSE_PORT_GDM4),
@@ -1977,11 +2050,11 @@ static void airoha_fe_recovery_runtime_init(struct airoha_eth *eth)
 	airoha_fe_crsn_qsel_init(eth);
 
 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(1),
-				    FE_PSE_PORT_PPE1);
+					    FE_PSE_PORT_PPE1);
 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(2),
-				    FE_PSE_PORT_PPE1);
+					    airoha_recovery_gdm2_fwd_port(eth));
 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(4),
-				    FE_PSE_PORT_PPE1);
+					    FE_PSE_PORT_PPE1);
 	airoha_fe_clear(eth, REG_GDM_INGRESS_CFG(1), GDM_STAG_EN_MASK);
 	airoha_fe_clear(eth, REG_GDM_INGRESS_CFG(2), GDM_STAG_EN_MASK);
 	airoha_fe_clear(eth, REG_GDM_INGRESS_CFG(4), GDM_STAG_EN_MASK);
@@ -2165,6 +2238,25 @@ static int airoha_mdio_c45_read(struct airoha_eth *eth, int addr, int devad,
 	return dm_mdio_read(mdio_dev, addr, devad, reg);
 }
 
+/* Use only for registers where 0xffff cannot be valid register data. */
+static int airoha_mdio_c45_read_non_ff(struct airoha_eth *eth, int addr,
+				       int devad, int reg)
+{
+	int retry, val = -EIO;
+
+	for (retry = 0; retry < AIROHA_RECOVERY_MDIO_RETRIES; retry++) {
+		val = airoha_mdio_c45_read(eth, addr, devad, reg);
+		if (val >= 0 && val != 0xffff)
+			return val;
+
+		if (val >= 0)
+			val = -EIO;
+		udelay(AIROHA_RECOVERY_MDIO_RETRY_US);
+	}
+
+	return val;
+}
+
 static int airoha_mdio_c45_write(struct airoha_eth *eth, int addr, int devad,
 				 int reg, u16 val)
 {
@@ -2209,6 +2301,17 @@ static int airoha_mdio_c22_read(struct airoha_eth *eth, int addr, int reg)
 static bool airoha_recovery_lan_phy_flap_enabled(void)
 {
 	const char *flap = env_get("recovery_lan_flap");
+
+	if (flap && (!strcmp(flap, "0") || !strcmp(flap, "off") ||
+		     !strcmp(flap, "disable") || !strcmp(flap, "false")))
+		return false;
+
+	return true;
+}
+
+static bool airoha_recovery_link_flap_enabled(void)
+{
+	const char *flap = env_get("recovery_link_flap");
 
 	if (flap && (!strcmp(flap, "0") || !strcmp(flap, "off") ||
 		     !strcmp(flap, "disable") || !strcmp(flap, "false")))
@@ -2263,27 +2366,19 @@ static int airoha_recovery_lan_phy_read_ctrl(struct airoha_eth *eth, int phy)
 	return ctrl < 0 ? ctrl : -EIO;
 }
 
-static bool airoha_recovery_lan_phy_set_power(struct airoha_eth *eth, bool up)
+static const int airoha_recovery_lan_phy_addrs[] = { 9, 10 };
+
+static int airoha_recovery_lan_phy_set_one_power(struct airoha_eth *eth, int phy, bool up)
 {
-	static const int lan_phy_addrs[] = { 9, 10 };
-	bool changed = false;
-	int i;
+	int ctrl, verify;
+	int retry, ret = -EIO;
+	u16 new_ctrl;
 
-	if (!airoha_recovery_lan_phy_flap_enabled())
-		return false;
-
-	if (up)
-		airoha_recovery_lan_wait_power_down();
-
-	for (i = 0; i < ARRAY_SIZE(lan_phy_addrs); i++) {
-		int phy = lan_phy_addrs[i];
-		int ctrl = airoha_recovery_lan_phy_read_ctrl(eth, phy);
-		u16 new_ctrl;
-
+	for (retry = 0; retry < AIROHA_RECOVERY_MDIO_RETRIES; retry++) {
+		ctrl = airoha_recovery_lan_phy_read_ctrl(eth, phy);
 		if (ctrl < 0) {
-			printf("airoha: recovery PHY %d BMCR read failed: %d\n",
-			       phy, ctrl);
-			continue;
+			ret = ctrl;
+			goto retry;
 		}
 
 		if (up)
@@ -2294,25 +2389,72 @@ static bool airoha_recovery_lan_phy_set_power(struct airoha_eth *eth, bool up)
 			new_ctrl = (ctrl & ~(BMCR_RESET | BMCR_ANRESTART)) |
 				   BMCR_PDOWN;
 
-		if (new_ctrl == ctrl)
-			continue;
+		ret = new_ctrl == ctrl ? 0 :
+			airoha_mdio_c22_write(eth, phy, MII_BMCR, new_ctrl);
+		if (ret)
+			goto retry;
 
-		if (airoha_mdio_c22_write(eth, phy, MII_BMCR, new_ctrl) >= 0)
-			changed = true;
+		udelay(AIROHA_RECOVERY_MDIO_RETRY_US);
+		verify = airoha_recovery_lan_phy_read_ctrl(eth, phy);
+		if (verify >= 0 && (!!(verify & BMCR_PDOWN) == !up))
+			return 0;
+
+		ret = verify < 0 ? verify : -EIO;
+retry:
+		udelay(AIROHA_RECOVERY_MDIO_RETRY_US);
 	}
 
-	if (!changed)
-		return false;
+	return ret;
+}
+
+static u8
+airoha_recovery_lan_phy_set_power(struct airoha_eth *eth, bool up, bool settle)
+{
+	const char *up_env = "recovery_lan_up_ms";
+	const ulong up_default = AIROHA_RECOVERY_LAN_UP_SETTLE_MS;
+	u8 ready = 0;
+	ulong up_ms;
+	int i;
+
+	if (!airoha_recovery_lan_phy_flap_enabled())
+		return 0;
+
+	if (up)
+		airoha_recovery_lan_wait_power_down();
+
+	for (i = 0; i < ARRAY_SIZE(airoha_recovery_lan_phy_addrs); i++) {
+		int phy = airoha_recovery_lan_phy_addrs[i];
+		int ret;
+
+		/* A down write may succeed even if its verification read fails. */
+		if (!up)
+			eth->recovery_lan_wake_pending |= BIT(i);
+
+		ret = airoha_recovery_lan_phy_set_one_power(eth, phy, up);
+
+		if (ret) {
+			printf("airoha: recovery PHY %d power-%s failed: %d\n",
+			       phy, up ? "up" : "down", ret);
+			continue;
+		}
+
+		ready |= BIT(i);
+		if (up)
+			eth->recovery_lan_wake_pending &= ~BIT(i);
+	}
 
 	if (up) {
-		airoha_recovery_lan_power_down_ms = 0;
-		mdelay(airoha_recovery_env_ulong("recovery_lan_up_ms",
-						 AIROHA_RECOVERY_LAN_UP_SETTLE_MS));
-	} else {
+		if (!eth->recovery_lan_wake_pending)
+			airoha_recovery_lan_power_down_ms = 0;
+		if (settle && ready) {
+			up_ms = airoha_recovery_env_ulong(up_env, up_default);
+			mdelay(up_ms);
+		}
+	} else if (eth->recovery_lan_wake_pending) {
 		airoha_recovery_lan_power_down_ms = get_timer(0);
 	}
 
-	return changed;
+	return ready;
 }
 
 static int airoha_mdio_c22_mmd_read(struct airoha_eth *eth, int addr, int devad,
@@ -2654,8 +2796,8 @@ static int airoha_rtl8261_speed_status_get(struct airoha_eth *eth, int phy_addr,
 {
 	int ret;
 
-	ret = airoha_mdio_c45_read(eth, phy_addr, RTL8261_MMD_VEND2,
-				   RTL8261_PHY_SPEED_STATUS);
+	ret = airoha_mdio_c45_read_non_ff(eth, phy_addr, RTL8261_MMD_VEND2,
+					  RTL8261_PHY_SPEED_STATUS);
 	if (ret < 0)
 		return ret;
 
@@ -2719,6 +2861,24 @@ static const char *airoha_rate_mode_name(u32 rate_adapt)
 static bool airoha_rtl8261_is_phy_addr(int phy_addr)
 {
 	return phy_addr == RTL8261_PHY5_ADDR || phy_addr == RTL8261_PHY8_ADDR;
+}
+
+static u8 airoha_rtl8261_init_bit(int phy_addr)
+{
+	if (phy_addr == RTL8261_PHY5_ADDR)
+		return RTL8261_PHY5_INIT;
+	if (phy_addr == RTL8261_PHY8_ADDR)
+		return RTL8261_PHY8_INIT;
+
+	return 0;
+}
+
+static bool airoha_rtl8261_is_initialized(struct airoha_eth *eth,
+					  int phy_addr)
+{
+	u8 bit = airoha_rtl8261_init_bit(phy_addr);
+
+	return bit && (eth->rtl8261_init_mask & bit);
 }
 
 static int airoha_rtl8261_link_state_get(struct airoha_eth *eth, int phy_addr,
@@ -2793,6 +2953,47 @@ static int airoha_rtl8261_link_state_get(struct airoha_eth *eth, int phy_addr,
 		break;
 	default:
 		break;
+	}
+
+	return 0;
+}
+
+static int airoha_rtl8261_copper_get(struct airoha_eth *eth, int phy,
+				     bool *link_up, u16 *speed_status)
+{
+	u16 speed;
+	int pma_stat1, pcs_stat1, an_stat1;
+	int ret;
+	bool pma_valid, pcs_valid, an_valid;
+	bool link;
+
+	if (!eth->mdio_dev || !airoha_rtl8261_is_phy_addr(phy))
+		return -ENODEV;
+
+	pma_stat1 = airoha_mdio_read_lstatus(eth, phy, MDIO_MMD_PMAPMD,
+					     RTL8261_PMA_STATUS1);
+	pcs_stat1 = airoha_mdio_read_lstatus(eth, phy, MDIO_MMD_PCS,
+					     RTL8261_PCS_STATUS1);
+	an_stat1 = airoha_mdio_read_lstatus(eth, phy, MDIO_MMD_AN,
+					    RTL8261_AN_STATUS1);
+	pma_valid = pma_stat1 >= 0 && pma_stat1 != 0xffff;
+	pcs_valid = pcs_stat1 >= 0 && pcs_stat1 != 0xffff;
+	an_valid = an_stat1 >= 0 && an_stat1 != 0xffff;
+	if (!pma_valid && !pcs_valid && !an_valid)
+		return pma_stat1 < 0 ? pma_stat1 : -EIO;
+
+	/* PHYXS is the host-side link and can stay up with the cable removed. */
+	link = (pma_valid && (pma_stat1 & MDIO_STAT1_LSTATUS)) ||
+	       (pcs_valid && (pcs_stat1 & MDIO_STAT1_LSTATUS)) ||
+	       (an_valid && (an_stat1 & MDIO_STAT1_LSTATUS));
+	if (link_up)
+		*link_up = link;
+
+	if (link && speed_status) {
+		ret = airoha_rtl8261_speed_status_get(eth, phy, &speed);
+		if (ret)
+			return ret;
+		*speed_status = speed;
 	}
 
 	return 0;
@@ -2953,7 +3154,8 @@ static int airoha_rtl8261_restart_aneg(struct airoha_eth *eth, int phy_addr)
 {
 	int ctrl;
 
-	ctrl = airoha_mdio_c45_read(eth, phy_addr, MDIO_MMD_AN, MDIO_CTRL1);
+	ctrl = airoha_mdio_c45_read_non_ff(eth, phy_addr, MDIO_MMD_AN,
+					   MDIO_CTRL1);
 	if (ctrl < 0)
 		return ctrl;
 
@@ -2968,7 +3170,8 @@ static void airoha_eth_gdm4_sync_rtl8261(struct airoha_eth *eth)
 	u16 speed = RTL8261_PHY_SPEED_10000M;
 	int ret;
 
-	if (!eth->rtl8261_init_done || !eth->mdio_dev)
+	if (!eth->mdio_dev ||
+	    !airoha_rtl8261_is_initialized(eth, RTL8261_PHY5_ADDR))
 		return;
 
 	ret = airoha_rtl8261_serdes_mode_update(eth, RTL8261_PHY5_ADDR);
@@ -2993,7 +3196,8 @@ static void airoha_eth_gdm4_apply_runtime_phy_cfg(struct airoha_eth *eth)
 {
 	int ret;
 
-	if (!eth->rtl8261_init_done || !eth->mdio_dev)
+	if (!eth->mdio_dev ||
+	    !airoha_rtl8261_is_initialized(eth, RTL8261_PHY5_ADDR))
 		return;
 
 	ret = airoha_rtl8261_apply_board_cfg(eth, RTL8261_PHY5_ADDR);
@@ -3425,8 +3629,8 @@ static int airoha_rtl8261_phy_reset(struct airoha_eth *eth, int phy_addr)
 	int ctrl, ret;
 	u32 timeout = 500;
 
-	ctrl = airoha_mdio_c45_read(eth, phy_addr, MDIO_MMD_PMAPMD,
-				    RTL8261_PHY_10G_CTRL);
+	ctrl = airoha_mdio_c45_read_non_ff(eth, phy_addr, MDIO_MMD_PMAPMD,
+					   RTL8261_PHY_10G_CTRL);
 	if (ctrl < 0)
 		return ctrl;
 
@@ -3440,7 +3644,7 @@ static int airoha_rtl8261_phy_reset(struct airoha_eth *eth, int phy_addr)
 					    RTL8261_PHY_10G_CTRL);
 		if (ctrl < 0)
 			return ctrl;
-		if (!(ctrl & BIT(15)))
+		if (ctrl != 0xffff && !(ctrl & BIT(15)))
 			break;
 		udelay(10);
 	} while (--timeout);
@@ -3640,16 +3844,30 @@ static int airoha_rtl8261_flow_l2(struct airoha_eth *eth, int phy_addr)
 
 static int airoha_rtl8261_full_patch_one(struct airoha_eth *eth, int phy_addr)
 {
-	int ret, chip_id, phy_id2, ctrl;
+	int ret, chip_id = -EIO, phy_id2 = -EIO, ctrl;
+	int retry;
 
-	chip_id = airoha_mdio_c45_read(eth, phy_addr, RTL8261_MMD_VEND1,
-				       RTL8261_PHY_CHIP_ID);
-	phy_id2 = airoha_mdio_c22_read(eth, phy_addr, RTL8261_PHY_ID2);
+	for (retry = 0; retry < AIROHA_RECOVERY_MDIO_RETRIES; retry++) {
+		chip_id = airoha_mdio_c45_read(eth, phy_addr, RTL8261_MMD_VEND1,
+					       RTL8261_PHY_CHIP_ID);
+		phy_id2 = airoha_mdio_c22_read(eth, phy_addr, RTL8261_PHY_ID2);
+		if ((chip_id >= 0 && chip_id != 0xffff &&
+		     (chip_id & RTL8261BE_CHIP_ID_MASK) == RTL8261BE_CHIP_ID) ||
+		    (phy_id2 >= 0 && phy_id2 != 0xffff &&
+		     phy_id2 == RTL8261_PHY_ID2_EXPECT))
+			break;
 
-	if ((chip_id < 0 ||
-	     (chip_id & RTL8261BE_CHIP_ID_MASK) != RTL8261BE_CHIP_ID) &&
-	    phy_id2 != RTL8261_PHY_ID2_EXPECT) {
-		return 0;
+		udelay(AIROHA_RECOVERY_MDIO_RETRY_US);
+	}
+	if (retry == AIROHA_RECOVERY_MDIO_RETRIES) {
+		if (chip_id < 0)
+			return chip_id;
+		if (phy_id2 < 0)
+			return phy_id2;
+		if (chip_id == 0xffff || phy_id2 == 0xffff)
+			return -EIO;
+
+		return -ENODEV;
 	}
 
 	ret = airoha_mdio_c45_write(eth, phy_addr, RTL8261_MMD_VEND1,
@@ -3757,14 +3975,14 @@ static int airoha_rtl8261_full_patch_one(struct airoha_eth *eth, int phy_addr)
 	if (ret)
 		return ret;
 
-	ctrl = airoha_mdio_c45_read(eth, phy_addr, MDIO_MMD_PMAPMD,
-				    RTL8261_PHY_10G_CTRL);
+	ctrl = airoha_mdio_c45_read_non_ff(eth, phy_addr, MDIO_MMD_PMAPMD,
+					   RTL8261_PHY_10G_CTRL);
 	if (ctrl < 0)
 		return ctrl;
 
 	ret = airoha_mdio_c45_write(eth, phy_addr, MDIO_MMD_PMAPMD,
 				    RTL8261_PHY_10G_CTRL,
-				    ctrl & ~RTL8261_PHY_10G_AN_DIS);
+				    ctrl & ~MDIO_CTRL1_LPOWER);
 	if (ret)
 		return ret;
 
@@ -3777,31 +3995,30 @@ static int airoha_rtl8261_full_patch_one(struct airoha_eth *eth, int phy_addr)
 	return 0;
 }
 
-static void airoha_rtl8261_minimal_init(struct airoha_eth *eth)
+static void airoha_rtl8261_init_one(struct airoha_eth *eth, int phy_addr)
 {
+	u8 bit = airoha_rtl8261_init_bit(phy_addr);
 	int ret;
 
-	if (eth->rtl8261_init_done)
+	if (!bit || (eth->rtl8261_init_mask & bit))
 		return;
 
+	ret = airoha_rtl8261_full_patch_one(eth, phy_addr);
+	if (ret) {
+		printf("rtl8261: phy%d patch failed: %d\n", phy_addr, ret);
+		return;
+	}
+
+	eth->rtl8261_init_mask |= bit;
+}
+
+static void airoha_rtl8261_minimal_init(struct airoha_eth *eth)
+{
 	if (!eth->mdio_dev)
 		return;
 
-	ret = airoha_rtl8261_full_patch_one(eth, RTL8261_PHY5_ADDR);
-	if (ret) {
-		printf("rtl8261: phy%d patch failed: %d\n", RTL8261_PHY5_ADDR,
-		       ret);
-		return;
-	}
-
-	ret = airoha_rtl8261_full_patch_one(eth, RTL8261_PHY8_ADDR);
-	if (ret) {
-		printf("rtl8261: phy%d patch failed: %d\n", RTL8261_PHY8_ADDR,
-		       ret);
-		return;
-	}
-
-	eth->rtl8261_init_done = true;
+	airoha_rtl8261_init_one(eth, RTL8261_PHY5_ADDR);
+	airoha_rtl8261_init_one(eth, RTL8261_PHY8_ADDR);
 }
 
 static void airoha_rtl8261_read_phy_props(struct airoha_eth *eth, ofnode mdio_node)
@@ -3952,30 +4169,9 @@ static int airoha_eth_gdm4_have_rx_signal(struct airoha_eth *eth)
 	return count >= 4;
 }
 
-static int airoha_eth_gdm4_rxlock_workaround(struct airoha_eth *eth)
-{
-	u32 val;
-
-	if (!eth->eth_pcs_usxgmii || !eth->eth_pcs_xfi_pma)
-		return 0;
-
-	val = airoha_rr(eth->eth_pcs_usxgmii, PCS_USXGMII_PCS_STUS_1);
-	if (val & PCS_USXGMII_PCS_RX_LINK_STATUS)
-		return 0;
-
-	if (!airoha_eth_gdm4_have_rx_signal(eth))
-		return 0;
-
-	airoha_eth_gdm4_cdr_reset(eth);
-	airoha_eth_gdm4_restart_an(eth);
-
-	return -EINVAL;
-}
-
 static int airoha_forced_tx_fport(struct airoha_eth *eth)
 {
 	const char *port;
-	bool need_gdm4_bringup;
 
 	port = env_get("recovery_port");
 	if (!port || !*port || !strcmp(port, "auto"))
@@ -3994,24 +4190,7 @@ static int airoha_forced_tx_fport(struct airoha_eth *eth)
 
 	if (!strcmp(port, "4") || !strcmp(port, "10g") ||
 	    !strcmp(port, "lan1")) {
-		airoha_eth_gdm4_apply_runtime_phy_cfg(eth);
-		need_gdm4_bringup = eth->last_tx_fport != 4;
-
-		/*
-		 * Do not restart in-band autonegotiation before every packet.
-		 * On XR1710G that keeps retraining the external serdes link and
-		 * can drop the very ARP/ICMP frames we are trying to emit.
-		 * Only run the heavy bring-up path when link is not already up.
-		 */
-		if (need_gdm4_bringup || !eth->gdm4_link_up ||
-		    !airoha_usxgmii_link_up(eth) ||
-		    !airoha_eth_gdm4_have_rx_signal(eth)) {
-			airoha_eth_gdm4_sync_rtl8261(eth);
-			airoha_eth_gdm4_restart_an(eth);
-			airoha_eth_gdm4_rxlock_workaround(eth);
-			airoha_eth_gdm4_link_up_config(eth);
-			eth->gdm4_link_up = true;
-		}
+		airoha_gdm4_ensure_ready(eth);
 		return 4;
 	}
 
@@ -4044,16 +4223,22 @@ static bool airoha_recovery_gdm4_candidate(struct airoha_eth *eth)
 
 static void airoha_gdm4_ensure_ready(struct airoha_eth *eth)
 {
-	airoha_eth_gdm4_apply_runtime_phy_cfg(eth);
+	ulong now = get_timer(0);
 
-	if (!eth->gdm4_link_up || !airoha_usxgmii_link_up(eth) ||
-	    !airoha_eth_gdm4_have_rx_signal(eth)) {
-		airoha_eth_gdm4_sync_rtl8261(eth);
-		airoha_eth_gdm4_restart_an(eth);
-		airoha_eth_gdm4_rxlock_workaround(eth);
-		airoha_eth_gdm4_link_up_config(eth);
-		eth->gdm4_link_up = true;
+	if (eth->gdm4_link_up && airoha_usxgmii_link_up(eth) &&
+	    airoha_eth_gdm4_have_rx_signal(eth)) {
+		eth->gdm4_last_retry_ms = 0;
+		return;
 	}
+
+	if (eth->gdm4_last_retry_ms &&
+	    now - eth->gdm4_last_retry_ms < AIROHA_RECOVERY_LINK_RETRY_MS)
+		return;
+
+	eth->gdm4_last_retry_ms = now;
+	airoha_eth_gdm4_apply_runtime_phy_cfg(eth);
+	airoha_eth_gdm4_link_up_config(eth);
+	eth->gdm4_link_up = true;
 }
 
 static void airoha_gdm4_recovery_prime(struct airoha_eth *eth)
@@ -4080,6 +4265,238 @@ static void airoha_gdm4_recovery_prime(struct airoha_eth *eth)
 	airoha_gdm4_update_cpu_path(eth);
 }
 
+static int airoha_recovery_rtl8261_set_power(struct airoha_eth *eth, int phy_addr, bool up)
+{
+	const int ctrl_reg = RTL8261_PHY_10G_CTRL;
+	const int devad = MDIO_MMD_PMAPMD;
+	int ctrl, verify;
+	int retry, ret = -EIO;
+	u16 new_ctrl;
+
+	if (!eth->mdio_dev ||
+	    !airoha_rtl8261_is_initialized(eth, phy_addr))
+		return -ENODEV;
+
+	for (retry = 0; retry < AIROHA_RECOVERY_MDIO_RETRIES; retry++) {
+		ctrl = airoha_mdio_c45_read(eth, phy_addr, devad, ctrl_reg);
+		if (ctrl < 0 || ctrl == 0xffff) {
+			ret = ctrl < 0 ? ctrl : -EIO;
+			goto retry;
+		}
+
+		new_ctrl = up ? ctrl & ~MDIO_CTRL1_LPOWER :
+				     ctrl | MDIO_CTRL1_LPOWER;
+		if (new_ctrl != ctrl) {
+			ret = airoha_mdio_c45_write(eth, phy_addr, devad, ctrl_reg, new_ctrl);
+			if (ret)
+				goto retry;
+		}
+
+		if (up)
+			mdelay(AIROHA_RECOVERY_PHY_POWER_SETTLE_MS);
+		else
+			udelay(AIROHA_RECOVERY_MDIO_RETRY_US);
+
+		verify = airoha_mdio_c45_read(eth, phy_addr, devad, ctrl_reg);
+		if (verify < 0 || verify == 0xffff ||
+		    (!!(verify & MDIO_CTRL1_LPOWER) != !up)) {
+			ret = verify < 0 ? verify : -EIO;
+			goto retry;
+		}
+
+		if (up) {
+			ret = airoha_rtl8261_restart_aneg(eth, phy_addr);
+			if (ret)
+				goto retry;
+		}
+
+		return 0;
+retry:
+		udelay(AIROHA_RECOVERY_MDIO_RETRY_US);
+	}
+
+	return ret;
+}
+
+static void airoha_recovery_power_down_wan_phy(struct airoha_eth *eth)
+{
+	int ret;
+
+	eth->rtl8261_phy8_wake_pending = false;
+	ret = airoha_recovery_rtl8261_set_power(eth, RTL8261_PHY8_ADDR, false);
+	if (ret)
+		printf("airoha: recovery PHY %d power-down failed: %d\n",
+		       RTL8261_PHY8_ADDR, ret);
+}
+
+static void airoha_recovery_retry_pending_wakes(struct airoha_eth *eth, ulong now)
+{
+	bool pending = eth->recovery_lan_wake_pending ||
+		       eth->rtl8261_phy5_wake_pending ||
+		       eth->rtl8261_phy8_wake_pending;
+	int i, ret;
+
+	if (!pending ||
+	    (eth->recovery_last_wake_retry_ms &&
+	     now - eth->recovery_last_wake_retry_ms <
+		     AIROHA_RECOVERY_LINK_RETRY_MS))
+		return;
+
+	eth->recovery_last_wake_retry_ms = now;
+	for (i = 0; i < ARRAY_SIZE(airoha_recovery_lan_phy_addrs); i++) {
+		int phy;
+
+		if (!(eth->recovery_lan_wake_pending & BIT(i)))
+			continue;
+
+		phy = airoha_recovery_lan_phy_addrs[i];
+		ret = airoha_recovery_lan_phy_set_one_power(eth, phy, true);
+		if (!ret)
+			eth->recovery_lan_wake_pending &= ~BIT(i);
+		else
+			printf("airoha: recovery PHY %d wake retry failed: %d\n",
+			       phy, ret);
+	}
+	if (!eth->recovery_lan_wake_pending)
+		airoha_recovery_lan_power_down_ms = 0;
+
+	if (eth->rtl8261_phy5_wake_pending) {
+		ret = airoha_recovery_rtl8261_set_power(eth, RTL8261_PHY5_ADDR, true);
+		if (!ret)
+			eth->rtl8261_phy5_wake_pending = false;
+		else
+			printf("airoha: recovery PHY %d wake retry failed: %d\n",
+			       RTL8261_PHY5_ADDR, ret);
+	}
+	if (eth->rtl8261_phy8_wake_pending) {
+		if (!airoha_recovery_port_is_wan()) {
+			eth->rtl8261_phy8_wake_pending = false;
+		} else {
+			ret = airoha_recovery_rtl8261_set_power(eth,
+								RTL8261_PHY8_ADDR,
+								true);
+			if (!ret)
+				eth->rtl8261_phy8_wake_pending = false;
+			else
+				printf("airoha: recovery PHY %d wake retry failed: %d\n",
+				       RTL8261_PHY8_ADDR, ret);
+		}
+	}
+
+	if (!eth->recovery_lan_wake_pending &&
+	    !eth->rtl8261_phy5_wake_pending &&
+	    !eth->rtl8261_phy8_wake_pending)
+		eth->recovery_last_wake_retry_ms = 0;
+}
+
+/*
+ * Restart the client-visible links only after lwIP, DHCP and HTTP are ready.
+ * A host that stayed connected while U-Boot entered recovery otherwise keeps
+ * its old link state and may not start a fresh DHCP transaction.
+ */
+void airoha_recovery_restart_links(struct udevice *dev)
+{
+	const char *link_flap_env = "recovery_link_flap_ms";
+	const ulong link_flap_default = AIROHA_RECOVERY_LAN_FLAP_MIN_MS;
+	struct airoha_eth *eth = dev_get_priv(dev);
+	bool cycle_lan = airoha_recovery_port_is_1g() ||
+			 airoha_recovery_dual_service_enabled();
+	bool cycle_10g = airoha_recovery_accept_gdm4_rx();
+	bool cycle_wan = airoha_recovery_port_is_wan();
+	bool flap_links = airoha_recovery_link_flap_enabled();
+	bool lan_cycle = false, phy5_cycle = false, phy8_cycle = false;
+	ulong down_ms = 0, link_down_ms;
+	int ret;
+
+	if (!cycle_wan) {
+		/* Keep physical WAN traffic out of the recovery datapath. */
+		airoha_recovery_power_down_wan_phy(eth);
+	} else if (!flap_links) {
+		/* A previous non-WAN recovery session may have left PHY8 down. */
+		eth->rtl8261_phy8_wake_pending = true;
+		ret = airoha_recovery_rtl8261_set_power(eth,
+							RTL8261_PHY8_ADDR, true);
+		if (ret) {
+			printf("airoha: recovery PHY %d power-up failed: %d\n",
+			       RTL8261_PHY8_ADDR, ret);
+		} else {
+			eth->rtl8261_phy8_wake_pending = false;
+		}
+	}
+
+	if (!flap_links || (!cycle_lan && !cycle_10g && !cycle_wan))
+		return;
+
+	if (cycle_lan) {
+		airoha_recovery_lan_phy_set_power(eth, false, false);
+		lan_cycle = !!eth->recovery_lan_wake_pending;
+	}
+	if (cycle_10g) {
+		phy5_cycle = true;
+		eth->rtl8261_phy5_wake_pending = true;
+		ret = airoha_recovery_rtl8261_set_power(eth, RTL8261_PHY5_ADDR, false);
+		if (ret) {
+			printf("airoha: recovery PHY %d power-down failed: %d\n",
+			       RTL8261_PHY5_ADDR, ret);
+		}
+	}
+	if (cycle_wan) {
+		phy8_cycle = true;
+		eth->rtl8261_phy8_wake_pending = true;
+		ret = airoha_recovery_rtl8261_set_power(eth, RTL8261_PHY8_ADDR, false);
+		if (ret) {
+			printf("airoha: recovery PHY %d power-down failed: %d\n",
+			       RTL8261_PHY8_ADDR, ret);
+		}
+	}
+
+	if (!lan_cycle && !phy5_cycle && !phy8_cycle)
+		return;
+
+	printf("airoha: restarting recovery links after network services are ready\n");
+	if (lan_cycle)
+		down_ms = airoha_recovery_env_ulong("recovery_lan_flap_ms",
+						    AIROHA_RECOVERY_LAN_FLAP_MIN_MS);
+	if (phy5_cycle || phy8_cycle) {
+		link_down_ms = airoha_recovery_env_ulong(link_flap_env,
+							 link_flap_default);
+		down_ms = max(down_ms, link_down_ms);
+	}
+	mdelay(down_ms);
+
+	if (lan_cycle)
+		airoha_recovery_lan_phy_set_power(eth, true, false);
+	if (phy5_cycle) {
+		ret = airoha_recovery_rtl8261_set_power(eth, RTL8261_PHY5_ADDR, true);
+		if (ret) {
+			printf("airoha: recovery PHY %d power-up failed: %d\n",
+			       RTL8261_PHY5_ADDR, ret);
+		} else {
+			eth->rtl8261_phy5_wake_pending = false;
+		}
+	}
+	if (phy8_cycle) {
+		ret = airoha_recovery_rtl8261_set_power(eth, RTL8261_PHY8_ADDR, true);
+		if (ret) {
+			printf("airoha: recovery PHY %d power-up failed: %d\n",
+			       RTL8261_PHY8_ADDR, ret);
+		} else {
+			eth->rtl8261_phy8_wake_pending = false;
+		}
+	}
+	eth->recovery_last_wake_retry_ms = 0;
+
+	if (phy5_cycle) {
+		eth->gdm4_link_up = false;
+		eth->gdm4_copper_link_up = false;
+		eth->gdm4_link_speed = 0;
+		eth->gdm4_last_retry_ms = 0;
+	}
+	eth->recovery_link_poll_started = false;
+	if (phy5_cycle)
+		airoha_gdm4_recovery_prime(eth);
+}
+
 /*
  * Periodic recovery link maintenance, called from the HTTP recovery main
  * loop. Handles clients that plug into the 10G port after recovery has
@@ -4089,37 +4506,56 @@ static void airoha_gdm4_recovery_prime(struct airoha_eth *eth)
 void airoha_recovery_poll_link(struct udevice *dev)
 {
 	struct airoha_eth *eth = dev_get_priv(dev);
-	static ulong last_poll;
 	ulong now = get_timer(0);
 	u16 speed;
-	bool copper_up;
+	bool copper_up, host_ready, link_changed;
 
-	if (now - last_poll < AIROHA_RECOVERY_LINK_POLL_MS)
+	if (eth->recovery_link_poll_started &&
+	    now - eth->recovery_last_link_poll_ms <
+		    AIROHA_RECOVERY_LINK_POLL_MS)
 		return;
-	last_poll = now;
+	eth->recovery_link_poll_started = true;
+	eth->recovery_last_link_poll_ms = now;
+	airoha_recovery_retry_pending_wakes(eth, now);
 
 	if (!airoha_recovery_accept_gdm4_rx())
 		return;
 
 	speed = RTL8261_PHY_SPEED_10000M;
 	copper_up = false;
-	if (airoha_rtl8261_link_state_get(eth, RTL8261_PHY5_ADDR, &copper_up,
-					  NULL, &speed, NULL, NULL))
+	if (airoha_rtl8261_copper_get(eth, RTL8261_PHY5_ADDR, &copper_up,
+				      &speed))
 		return;
 
-	if (!copper_up)
+	if (!copper_up) {
+		eth->gdm4_link_up = false;
+		eth->gdm4_copper_link_up = false;
+		eth->gdm4_link_speed = 0;
 		return;
-
-	/* Copper link negotiated at a new rate: refresh GDM4 fragment sizes. */
-	if (speed != eth->gdm4_link_speed) {
-		eth->gdm4_link_speed = speed;
-		airoha_eth_gdm4_sync_rtl8261(eth);
 	}
 
-	/* Copper is up but the host side is not forwarding yet: kick it. */
-	if (!airoha_usxgmii_link_up(eth) ||
-	    !airoha_eth_gdm4_have_rx_signal(eth))
+	link_changed = !eth->gdm4_copper_link_up;
+	eth->gdm4_copper_link_up = true;
+	eth->rtl8261_phy5_wake_pending = false;
+
+	/* Do not restart AN every second while a slower link is still training. */
+	host_ready = airoha_usxgmii_link_up(eth) &&
+		     airoha_eth_gdm4_have_rx_signal(eth);
+	link_changed |= speed != eth->gdm4_link_speed;
+	/* Use the validated line speed; a second MDIO read may fail transiently. */
+	if (link_changed) {
+		airoha_eth_gdm4_set_frag_size(eth, speed);
+		eth->gdm4_last_retry_ms = 0;
+	}
+	eth->gdm4_link_speed = speed;
+	if (!host_ready) {
 		airoha_gdm4_ensure_ready(eth);
+	} else if (host_ready) {
+		if (link_changed)
+			airoha_eth_gdm4_sync_rtl8261(eth);
+		eth->gdm4_link_up = true;
+		eth->gdm4_last_retry_ms = 0;
+	}
 }
 
 static u8 airoha_pick_tx_fport(struct airoha_eth *eth)
@@ -4135,8 +4571,6 @@ static u8 airoha_pick_tx_fport(struct airoha_eth *eth)
 		airoha_recovery_set_default_fport(eth, forced_fport);
 		return forced_fport;
 	}
-
-	airoha_eth_gdm4_rxlock_workaround(eth);
 
 	lan_up = airoha_recovery_lan_up(eth);
 	wan_up = airoha_recovery_wan_up(eth);
@@ -4354,14 +4788,15 @@ static int airoha_fe_init(struct airoha_eth *eth)
 		      FIELD_PREP(CDM2_VIP_QSEL_MASK, 0x0));
 	airoha_fe_crsn_qsel_init(eth);
 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(1), FE_PSE_PORT_PPE1);
-	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(2), FE_PSE_PORT_PPE1);
+	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(2),
+				    airoha_recovery_gdm2_fwd_port(eth));
 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(4), FE_PSE_PORT_PPE1);
 	/*
 	 * Linux assigns the PPE default CPU port per GDM netdev in ndo_init.
-	 * Recovery only needs PPE1 and QDMA0, so route GDM1/GDM2/GDM4 traffic
-	 * received by PPE1 back to CDM1 explicitly. GDM4 is FE/PSE port 9, so
-	 * its default CPU-port entry lives in the next PPE default-cport
-	 * register word rather than alongside GDM1/GDM2.
+	 * Recovery only needs PPE1 and QDMA0, so route traffic received by PPE1
+	 * back to CDM1 explicitly. GDM4 is FE/PSE port 9, so its default CPU-port
+	 * entry lives in the next PPE default-cport register word rather than
+	 * alongside GDM1/GDM2.
 	 */
 	airoha_fe_rmw(eth, REG_PPE_DFT_CPORT(0, FE_PSE_PORT_GDM1),
 		      DFT_CPORT_MASK(FE_PSE_PORT_GDM1) |
@@ -4616,6 +5051,8 @@ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
 
 	q->ndesc = ndesc;
 	q->head = 0;
+	q->rx_head_aligned = false;
+	q->rx_drop_chain = false;
 
 	rx_buf_size = ALIGN(q->ndesc * AIROHA_RX_BUF_SIZE, ARCH_DMA_MINALIGN);
 	q->rx_buf = memalign(ARCH_DMA_MINALIGN, rx_buf_size);
@@ -4807,17 +5244,6 @@ static int airoha_qdma_hw_init(struct airoha_qdma *qdma)
 	return 0;
 }
 
-static void airoha_qdma_sync_rx_head(struct airoha_qdma *qdma,
-				     struct airoha_queue *q, int qid)
-{
-	u16 dma_idx;
-
-	dma_idx = FIELD_GET(RX_RING_DMA_IDX_MASK,
-			    airoha_qdma_rr(qdma, REG_RX_DMA_IDX(qid)));
-	if (dma_idx < q->ndesc)
-		q->head = dma_idx;
-}
-
 static void airoha_qdma_stop_dma(struct airoha_qdma *qdma)
 {
 	u32 val;
@@ -4883,6 +5309,8 @@ static void airoha_qdma_reset_rx_ring(struct airoha_qdma *qdma, int qid)
 		return;
 
 	q->head = 0;
+	q->rx_head_aligned = false;
+	q->rx_drop_chain = false;
 	airoha_qdma_init_rx_desc(q);
 	airoha_qdma_rmw(qdma, REG_RX_CPU_IDX(qid), RX_RING_CPU_IDX_MASK,
 			FIELD_PREP(RX_RING_CPU_IDX_MASK, q->ndesc - 1));
@@ -4947,7 +5375,15 @@ static void airoha_recovery_runtime_reset(struct airoha_eth *eth)
 	eth->last_tx_fport = 0;
 	eth->last_rx_fport = 0;
 	eth->gdm4_link_up = false;
+	eth->gdm4_copper_link_up = false;
+	eth->recovery_link_poll_started = false;
+	eth->recovery_lan_wake_pending = 0;
+	eth->rtl8261_phy5_wake_pending = false;
+	eth->rtl8261_phy8_wake_pending = false;
 	eth->gdm4_link_speed = 0;
+	eth->recovery_last_link_poll_ms = 0;
+	eth->recovery_last_wake_retry_ms = 0;
+	eth->gdm4_last_retry_ms = 0;
 	eth->last_rx_valid = false;
 	eth->last_rx_qdma = 0;
 	eth->last_rx_sport = 0;
@@ -5299,12 +5735,20 @@ static int airoha_eth_probe(struct udevice *dev)
 static int airoha_eth_init(struct udevice *dev)
 {
 	struct airoha_eth *eth = dev_get_priv(dev);
-	int i, qid, ret;
+	int i, ret;
 
 	airoha_recovery_runtime_reset(eth);
+	/* Retry only RTL8261 PHYs whose earlier initialization did not finish. */
+	airoha_rtl8261_minimal_init(eth);
+	if (airoha_recovery_port_is_wan()) {
+		ret = airoha_recovery_rtl8261_set_power(eth, RTL8261_PHY8_ADDR, true);
+		if (ret)
+			printf("airoha: PHY %d power-up failed: %d\n",
+			       RTL8261_PHY8_ADDR, ret);
+	}
 	airoha_switch_recovery_quiesce(eth);
 	airoha_fe_recovery_runtime_stop(eth);
-	airoha_recovery_lan_phy_set_power(eth, false);
+	airoha_recovery_lan_phy_set_power(eth, false, false);
 
 	for (i = 0; i < AIROHA_MAX_NUM_QDMA; i++) {
 		struct airoha_qdma *qdma = &eth->qdma[i];
@@ -5320,31 +5764,20 @@ static int airoha_eth_init(struct udevice *dev)
 
 	airoha_fe_recovery_runtime_init(eth);
 	arht_eth_write_hwaddr(dev);
-	qid = 0;
 
 	for (i = 0; i < AIROHA_MAX_NUM_QDMA; i++) {
 		struct airoha_qdma *qdma = &eth->qdma[i];
-		struct airoha_queue *q;
 
 		if (!airoha_qdma_recovery_enabled(eth, qdma) ||
 		    !airoha_qdma_ready(qdma))
 			continue;
 
-		q = &qdma->q_rx[qid];
 		airoha_qdma_set(qdma, REG_QDMA_GLOBAL_CFG,
 				GLOBAL_CFG_TX_DMA_EN_MASK |
-				GLOBAL_CFG_RX_DMA_EN_MASK);
-		/*
-		 * On XR1710G the QDMA RX engine reports an initial DMA index of
-		 * 2 as soon as RX DMA is enabled, and the first completed
-		 * descriptors then appear starting at that slot rather than at
-		 * descriptor 0. Track the hardware start position so the U-Boot
-		 * RX path looks at the same descriptor the engine will fill.
-		 */
-		airoha_qdma_sync_rx_head(qdma, q, qid);
+					GLOBAL_CFG_RX_DMA_EN_MASK);
 	}
 
-	airoha_recovery_lan_phy_set_power(eth, true);
+	airoha_recovery_lan_phy_set_power(eth, true, true);
 	airoha_switch_recovery_runtime_init(eth);
 	airoha_gdm4_recovery_prime(eth);
 
@@ -5370,7 +5803,7 @@ static void airoha_eth_stop(struct udevice *dev)
 		airoha_qdma_stop_dma(qdma);
 	}
 
-	airoha_recovery_lan_phy_set_power(eth, false);
+	airoha_recovery_lan_phy_set_power(eth, false, false);
 	airoha_recovery_runtime_reset(eth);
 }
 
@@ -5521,7 +5954,6 @@ static int airoha_eth_send(struct udevice *dev, void *packet, int length)
 
 	if (airoha_eth_is_broadcast_addr(packet) ||
 	    airoha_eth_is_multicast_addr(packet)) {
-		airoha_eth_gdm4_rxlock_workaround(eth);
 		/*
 		 * Link detection on the 1G switch ports can miss a live cable.
 		 * Mirroring broadcasts to fport 1 is cheap and is required for
@@ -5603,8 +6035,8 @@ static int airoha_eth_recv_qdma(struct airoha_eth *eth, struct airoha_qdma *qdma
 	u8 sport, crsn;
 	u16 ppe_entry, length;
 	uchar *packet;
-	int qid;
-	int n;
+	bool more;
+	int n, qid;
 
 	qid = 0;
 	q = &qdma->q_rx[qid];
@@ -5613,30 +6045,47 @@ static int airoha_eth_recv_qdma(struct airoha_eth *eth, struct airoha_qdma *qdma
 	dma_unmap_unaligned(virt_to_phys(desc), sizeof(*desc), DMA_FROM_DEVICE);
 
 	desc_ctrl = le32_to_cpu(desc->ctrl);
-	if (!(desc_ctrl & QDMA_DESC_DONE_MASK)) {
-		for (n = 1; n < q->ndesc; n++) {
-			u16 idx = (q->head + n) % q->ndesc;
-
-			desc = &q->desc[idx];
+	/*
+	 * XR1710G can start filling RX at descriptor 2 even though software reset
+	 * the consumer to 0. Find that initial even descriptor once, then keep
+	 * strict ring order. Runtime scanning would rediscover an already-consumed
+	 * even descriptor, which remains DONE until its odd partner is recycled.
+	 */
+	if (!(desc_ctrl & QDMA_DESC_DONE_MASK) && !q->rx_head_aligned) {
+		for (n = 2; n < q->ndesc; n += 2) {
+			desc = &q->desc[n];
 			dma_unmap_unaligned(virt_to_phys(desc), sizeof(*desc),
 					    DMA_FROM_DEVICE);
 			desc_ctrl = le32_to_cpu(desc->ctrl);
 			if (!(desc_ctrl & QDMA_DESC_DONE_MASK))
 				continue;
 
-			q->head = idx;
+			q->head = n;
 			break;
 		}
-
-		if (n == q->ndesc)
-			return -EAGAIN;
 	}
+
+	if (!(desc_ctrl & QDMA_DESC_DONE_MASK))
+		return -EAGAIN;
+	q->rx_head_aligned = true;
 
 	dma_addr = le32_to_cpu(desc->addr);
 	if (dma_addr)
 		dma_unmap_single(dma_addr, AIROHA_RX_BUF_SIZE, DMA_FROM_DEVICE);
 
 	length = FIELD_GET(QDMA_DESC_LEN_MASK, desc_ctrl);
+	more = !!(desc_ctrl & QDMA_DESC_MORE_MASK);
+	/*
+	 * U-Boot has no scatter-gather RX API. Drain every descriptor in a
+	 * scattered frame, and reject lengths outside the mapped RX buffer.
+	 * RX bit 30 reports overflow and is not a reliable validity flag.
+	 */
+	if (q->rx_drop_chain || !length || length > AIROHA_RX_BUF_SIZE || more) {
+		q->rx_drop_chain = more;
+		airoha_qdma_recycle_rx_desc(qdma, q, qid);
+		return -EAGAIN;
+	}
+
 	msg1 = le32_to_cpu(desc->msg1);
 	sport = FIELD_GET(QDMA_ETH_RXMSG_SPORT_MASK, msg1);
 	crsn = FIELD_GET(QDMA_ETH_RXMSG_CRSN_MASK, msg1);
@@ -5669,19 +6118,6 @@ static int airoha_eth_recv_qdma(struct airoha_eth *eth, struct airoha_qdma *qdma
 	if (length >= 12)
 		airoha_peer_fport_learn(eth, packet + ARP_HLEN,
 					 eth->last_rx_fport);
-
-	/*
-	 * The Linux driver does not discard RX frames solely due to
-	 * QDMA_DESC_DROP_MASK. On XR1710G 10G recovery we now see
-	 * GDM4 traffic arriving with SPORT 0x18 and this bit set,
-	 * so keep those frames visible to the network stack instead
-	 * of dropping them unconditionally in U-Boot.
-	 */
-	if ((desc_ctrl & QDMA_DESC_DROP_MASK) &&
-	    !(airoha_recovery_accept_gdm4_rx() && sport == 0x18)) {
-		airoha_qdma_recycle_rx_desc(qdma, q, qid);
-		return -EAGAIN;
-	}
 
 	*packetp = packet;
 

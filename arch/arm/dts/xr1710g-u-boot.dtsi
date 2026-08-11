@@ -56,10 +56,10 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&mdio_pins>;
 	/*
-	 * XR1710G exposes recovery Ethernet through external PHYs at MDIO
-	 * addresses 5 and 8, so the switch must poll that window instead of
-	 * the upstream default.
+	 * Keep the native port-to-PHY mapping: switch ports 1 and 2 use PHY
+	 * addresses 9 and 10. External PHYs 5 and 8 are serviced directly by
+	 * GDM4 and GDM2 and must not shift the switch auto-poll window.
 	 */
-	airoha,phy-poll-start = <5>;
-	airoha,phy-poll-end = <10>;
+	airoha,phy-poll-start = <8>;
+	airoha,phy-poll-end = <12>;
 };

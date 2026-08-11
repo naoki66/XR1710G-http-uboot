@@ -20,10 +20,10 @@
   --blue-soft:#eaf2ff;
   --green:#23815b;
   --green-soft:#eaf6f0;
-  --red:#b34338;
+  --red:#c62828;
   --red-soft:#fbecea;
-  --info:#f1f6fd;
-  --info-line:#b9d3f6;
+  --info:#f8f9fb;
+  --info-line:#d7dce5;
 }
 *{box-sizing:border-box}
 html,body{min-height:100%;margin:0}
@@ -38,10 +38,14 @@ button,input,select{font:inherit;letter-spacing:0}
   min-height:100svh;
   display:grid;
   grid-template-columns:270px minmax(0,1fr);
+  align-items:start;
   animation:page-in .28s ease both;
 }
 .sidebar{
-  min-height:100svh;
+  position:sticky;
+  top:0;
+  height:100svh;
+  min-height:0;
   display:flex;
   flex-direction:column;
   padding:30px 22px 24px;
@@ -49,19 +53,13 @@ button,input,select{font:inherit;letter-spacing:0}
   background:var(--side);
 }
 .brand{
-  padding:4px 8px 24px;
+  padding:4px 8px 22px;
   border-bottom:1px solid var(--line);
 }
 .brand strong{display:block;font-size:17px;font-weight:780}
 .brand span{display:block;margin-top:6px;color:var(--muted);font-size:12px}
-.nav-label{
-  margin:28px 8px 10px;
-  color:#8b95a3;
-  font-size:11px;
-  font-weight:760;
-  text-transform:uppercase;
-}
 .nav{
+  margin-top:22px;
   display:grid;
   gap:6px;
 }
@@ -97,8 +95,7 @@ button,input,select{font:inherit;letter-spacing:0}
 }
 .side-actions{
   margin-top:auto;
-  padding:20px 8px 0;
-  border-top:1px solid var(--line);
+  padding:0 8px 14px;
 }
 .reboot-button{
   width:100%;
@@ -115,8 +112,7 @@ button,input,select{font:inherit;letter-spacing:0}
 .reboot-button:hover:not(:disabled){color:#722c25;border-color:#cf8e87;background:var(--red-soft)}
 .reboot-button:disabled{cursor:default;opacity:.5}
 .side-meta{
-  margin-top:16px;
-  padding:20px 8px 0;
+  padding:14px 8px 0;
   border-top:1px solid var(--line);
   color:var(--muted);
   font-size:11px;
@@ -130,7 +126,7 @@ button,input,select{font:inherit;letter-spacing:0}
   display:flex;
   align-items:flex-start;
   justify-content:center;
-  padding:42px 34px 30px;
+  padding:30px 28px 24px;
 }
 .workspace{width:min(760px,100%)}
 .panel{
@@ -140,9 +136,9 @@ button,input,select{font:inherit;letter-spacing:0}
   background:var(--panel);
   box-shadow:0 12px 34px rgba(45,64,89,.08);
 }
-.panel-inner{padding:32px 38px 30px}
+.panel-inner{padding:28px 34px 26px}
 .heading{
-  padding-bottom:24px;
+  padding-bottom:20px;
   border-bottom:1px solid var(--line);
   text-align:center;
 }
@@ -155,13 +151,13 @@ button,input,select{font:inherit;letter-spacing:0}
 }
 .heading p{
   max-width:540px;
-  margin:14px auto 0;
+  margin:12px auto 0;
   color:var(--muted);
   line-height:1.7;
 }
 .target-info{
   width:min(420px,100%);
-  margin:24px auto 0;
+  margin:20px auto 0;
   display:grid;
   grid-template-columns:90px minmax(0,1fr);
   gap:0;
@@ -196,7 +192,7 @@ button,input,select{font:inherit;letter-spacing:0}
 .layout-select:disabled{cursor:default;opacity:.55;background:var(--soft)}
 .layout-help{min-height:18px;margin:7px 0 0;color:var(--muted);font-size:12px;line-height:1.5}
 .layout-help.warning{color:var(--red)}
-.file-block{margin-top:26px}
+.file-block{margin-top:22px}
 .file-label{display:block;margin-bottom:9px;color:#465363;font-size:13px;font-weight:700}
 .file-row{
   min-height:48px;
@@ -256,8 +252,8 @@ button,input,select{font:inherit;letter-spacing:0}
 .upload-button:hover:not(:disabled){background:var(--blue-dark);transform:translateY(-1px);box-shadow:0 9px 22px rgba(40,120,227,.24)}
 .upload-button:disabled{cursor:default;opacity:.42;box-shadow:none}
 .progress-section{
-  margin-top:28px;
-  padding-top:22px;
+  margin-top:24px;
+  padding-top:20px;
   border-top:1px solid var(--line);
 }
 .progress-head{
@@ -305,22 +301,24 @@ button,input,select{font:inherit;letter-spacing:0}
 .progress-row.complete .progress-fill{background:var(--green)}
 .progress-percent{text-align:right;color:#788391;font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
 .notice{
-  margin-top:24px;
+  margin-top:20px;
   padding:16px 18px;
   border:1px solid var(--info-line);
   border-radius:7px;
   background:var(--info);
 }
-.notice strong{display:block;margin-bottom:8px;color:#234a7c;font-size:13px}
-.notice ul{margin:0;padding-left:18px;color:#526985;font-size:12px;line-height:1.8}
+.notice strong{display:block;margin-bottom:8px;color:var(--red);font-size:14px}
+.notice ul{margin:0;padding-left:18px;color:#4f5b6b;font-size:12px;line-height:1.8}
 .notice li.critical-warning{
+  margin-bottom:4px;
   color:var(--red);
-  font-size:16px;
+  font-size:14px;
   font-weight:800;
   line-height:1.55;
 }
 .notice li.critical-warning::marker{color:var(--red)}
 .footer{
+  display:none;
   padding:18px 8px 0;
   color:#7d8794;
   text-align:center;
@@ -329,16 +327,19 @@ button,input,select{font:inherit;letter-spacing:0}
 @keyframes page-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @keyframes flow{to{background-position:-180% 0}}
 @media(max-width:760px){
-  .app{grid-template-columns:1fr}
-  .sidebar{min-height:0;padding:16px;border-right:0;border-bottom:1px solid var(--line)}
-  .brand{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:0 2px 14px}
+  .app{display:block}
+  .sidebar{z-index:10;height:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 8px;padding:12px;border-right:0;border-bottom:1px solid var(--line);box-shadow:0 4px 12px #0001}
+  .brand{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 2px 8px;border:0}
   .brand span{margin:0;text-align:right}
-  .nav-label{display:none}
-  .nav{grid-template-columns:1fr 1fr;gap:8px}
-  .nav-button{justify-content:center;font-size:13px}
-  .side-actions{margin-top:12px;padding:12px 0 0}
+  .nav{grid-column:1/-1;margin:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .nav-button,.reboot-button{height:50px;min-height:50px;padding:4px;font-size:12px;line-height:1.25;text-align:center}
+  .nav-button{justify-content:center}
+  .nav-dot{display:none}
+  .side-actions{grid-column:1/-1;margin:0;padding:0;border:0}
+  .reboot-button{height:44px;min-height:44px}
   .side-meta{display:none}
   .main{padding:18px 12px 24px}
+  .footer{display:block}
 }
 @media(max-width:520px){
   .panel-inner{padding:24px 18px 22px}
@@ -360,9 +361,8 @@ button,input,select{font:inherit;letter-spacing:0}
 <div class='app'>
   <aside class='sidebar'>
     <div class='brand'>
-      <div><strong>XR1710G Recovery Mode</strong><span>Recovery WebUI</span></div>
+      <strong>XR1710G Recovery Mode</strong><span>Recovery WebUI</span>
     </div>
-    <p class='nav-label'>Recovery</p>
     <nav class='nav' aria-label='Recovery target'>
       <button class='nav-button active' type='button' data-target='firmware' aria-current='page'><span class='nav-dot'></span>Firmware Recovery</button>
       <button class='nav-button' type='button' data-target='uboot'><span class='nav-dot'></span>Update U-Boot</button>
@@ -477,11 +477,11 @@ var profiles={
   },
   uboot:{
     title:'Update U-Boot',
-    copy:'Upload an XR1710G chainloader image. Only the raw U-Boot slot will be written.',
+    copy:'Upload an XR1710G chainloader slot image. Only the raw U-Boot slot will be written.',
     target:'SPI-NAND @ 0x600000',
     scope:'Write the 1 MiB chainloader slot',
     preserve:'All UBI firmware volumes and configuration data',
-    help:'U-Boot images must not exceed 1 MiB',
+    help:'Use xr1710g-chainloader-slot.bin, not u-boot.bin',
     action:'Upload and Update',
     notices:['Do not power off or reboot the device during the U-Boot update!','The image format is validated before writing.','UBI firmware volumes are not modified.']
   }
