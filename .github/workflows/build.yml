@@ -205,32 +205,47 @@ jobs:
           FIT_SHA=$(sha256sum "$FIT_PATH" | awk '{print $1}')
           NOTES_FILE=$(mktemp)
           cat > "$NOTES_FILE" <<EOF
-          Automated build from commit ${{ needs.build.outputs.commit }}
+          Automated build from commit [\`${{ needs.build.outputs.commit }}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}).
 
-          Release channel: ${RELEASE_MODE}
+          **Release channel:** ${RELEASE_MODE}
 
           ## Files
 
-          - **flash-slot.bin** — Flash through HTTP Recovery \`uboot\` target
-          - **chainloader.itb** — RAM-only validation via TFTP
+          - **\`${SLOT_NAME}\`** — Flash through the HTTP Recovery \`uboot\` target.
+          - **\`${FIT_NAME}\`** — RAM-only validation through TFTP. Do not upload this file to HTTP Recovery.
 
           ## SHA256
 
+          \`\`\`text
           ${SLOT_SHA}  ${SLOT_NAME}
           ${FIT_SHA}  ${FIT_NAME}
+          \`\`\`
 
           ## Flash via HTTP Recovery
 
-          1. Connect PC to 10GbE port (DHCP mode)
-          2. Hold reset button until LED shows recovery pattern
-          3. Open http://192.168.255.1
-          4. Select \`uboot\` target, upload **flash-slot.bin**
+          1. Connect the PC to the device's **10GbE port** and enable DHCP.
+          2. Connect the device to power.
+          3. Wait for the front red LED to light up.
+          4. Within 5 seconds, use a pin to press and hold the recessed \`RESET\` button.
+          5. Keep holding until the front LEDs turn off and then light up again.
+          6. Release the \`RESET\` button when the LEDs begin cycling in an alternating rainbow breathing pattern.
+          7. Open [http://192.168.255.1](http://192.168.255.1/).
+          8. Select the **\`uboot\`** target.
+          9. Upload **\`${SLOT_NAME}\`** and wait for flashing to complete.
+
+          > **Important: Do not power off, disconnect, or reboot the device during recovery!**
+
+          ---
 
           ## Donate
 
-          如果您觉得对您有帮助，请我喝杯咖啡吧，让我更有动力持续更新。
+          <p align="center">
+            如果这个项目对您有所帮助，欢迎请我喝杯咖啡，支持后续维护和更新。
+          </p>
 
-          ![Donate](https://github.com/naoki66/XR1710G-http-uboot/raw/${RELEASE_TAG}/c6ea388c976395326514814f80d512d5.png)
+          <p align="center">
+            <img src="https://github.com/naoki66/XR1710G-http-uboot/raw/${RELEASE_TAG}/c6ea388c976395326514814f80d512d5.png" alt="Donate" width="240">
+          </p>
           EOF
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

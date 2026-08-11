@@ -1,0 +1,393 @@
+name: Publish Existing U-Boot Artifact
+
+run-name: Publish run ${{ inputs.run_id }} as ${{ inputs.release_type }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Actions run ID containing a successful Build U-Boot job
+        required: true
+        type: string
+      release_type:
+        description: Publish the Artifact as a pre-release or release
+        required: true
+        default: pre-release
+        type: choice
+        options:
+          - pre-release
+          - release
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  GH_REPO: ${{ github.repository }}
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-existing-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Existing Artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Verify source run
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          if ! [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Run ID must be a positive integer: $SOURCE_RUN_ID" >&2
+            exit 1
+          fi
+
+          RUN_API="repos/${GH_REPO}/actions/runs/${SOURCE_RUN_ID}"
+          SOURCE_STATUS=$(gh api "$RUN_API" --jq '.status')
+          SOURCE_PATH=$(gh api "$RUN_API" --jq '.path')
+          SOURCE_REPO=$(gh api "$RUN_API" --jq '.head_repository.full_name')
+          SOURCE_HEAD_SHA=$(gh api "$RUN_API" --jq '.head_sha')
+          if [ "$SOURCE_STATUS" != "completed" ]; then
+            echo "Source run $SOURCE_RUN_ID is not complete: $SOURCE_STATUS" >&2
+            exit 1
+          fi
+          if [ "$SOURCE_PATH" != ".github/workflows/build.yml" ]; then
+            echo "Source run does not use .github/workflows/build.yml: $SOURCE_PATH" >&2
+            exit 1
+          fi
+          if [ "$SOURCE_REPO" != "$GH_REPO" ]; then
+            echo "Source run belongs to another repository: $SOURCE_REPO" >&2
+            exit 1
+          fi
+          if ! [[ "$SOURCE_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Source run returned an invalid commit: $SOURCE_HEAD_SHA" >&2
+            exit 1
+          fi
+
+          mapfile -t BUILD_RESULTS < <(
+            gh api "${RUN_API}/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[] | select(.name == "Build U-Boot") | .conclusion'
+          )
+          if [ "${#BUILD_RESULTS[@]}" -ne 1 ] || [ "${BUILD_RESULTS[0]}" != "success" ]; then
+            echo "Expected one successful Build U-Boot job in source run" >&2
+            printf 'Build job conclusions: %s\n' "${BUILD_RESULTS[*]:-none}" >&2
+            exit 1
+          fi
+
+          mapfile -t ARTIFACTS < <(
+            gh api "${RUN_API}/artifacts?per_page=100" --jq '
+              .artifacts[] |
+              select(.expired == false) |
+              select(.name | test("^xr1710g-uboot-[0-9]{8}-[0-9a-f]{12}$")) |
+              [.id, .name] | @tsv
+            '
+          )
+          if [ "${#ARTIFACTS[@]}" -ne 1 ]; then
+            echo "Expected one unexpired XR1710G build Artifact, found ${#ARTIFACTS[@]}" >&2
+            printf 'Matching Artifacts: %s\n' "${ARTIFACTS[*]:-none}" >&2
+            exit 1
+          fi
+
+          IFS=$'\t' read -r ARTIFACT_ID ARTIFACT_NAME <<< "${ARTIFACTS[0]}"
+          echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${SOURCE_HEAD_SHA,,}" >> "$GITHUB_OUTPUT"
+          echo "Source run: $SOURCE_RUN_ID"
+          echo "Source commit: ${SOURCE_HEAD_SHA,,}"
+          echo "Source Artifact: $ARTIFACT_NAME ($ARTIFACT_ID)"
+
+      - name: Download source build Artifact
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
+          path: release-output
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.run_id }}
+
+      - name: Validate Artifact and read build metadata
+        id: metadata
+        env:
+          SOURCE_ARTIFACT_NAME: ${{ steps.source.outputs.artifact_name }}
+          SOURCE_HEAD_SHA: ${{ steps.source.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' INFO_FILES < <(
+            find release-output -type f -name build-info.txt -print0
+          )
+          if [ "${#INFO_FILES[@]}" -ne 1 ]; then
+            echo "Expected exactly one build-info.txt, found ${#INFO_FILES[@]}" >&2
+            find release-output -maxdepth 3 -type f -print >&2 || true
+            exit 1
+          fi
+
+          INFO_FILE=${INFO_FILES[0]}
+          ARTIFACT_DIR=$(dirname "$INFO_FILE")
+
+          read_field() {
+            local label=$1
+            local -a values
+
+            mapfile -t values < <(sed -n "s/^${label}: //p" "$INFO_FILE")
+            if [ "${#values[@]}" -ne 1 ] || [ -z "${values[0]}" ]; then
+              echo "Missing or duplicate '${label}' field in $INFO_FILE" >&2
+              exit 1
+            fi
+            printf '%s\n' "${values[0]}"
+          }
+
+          COMMIT_FULL=$(read_field "Commit")
+          SLOT_NAME=$(read_field "Flash slot image")
+          FIT_NAME=$(read_field "Chainloader FIT")
+          COMMIT_FULL=${COMMIT_FULL,,}
+          SOURCE_HEAD_SHA=${SOURCE_HEAD_SHA,,}
+
+          if ! [[ "$COMMIT_FULL" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid commit in $INFO_FILE: $COMMIT_FULL" >&2
+            exit 1
+          fi
+          if [ "$COMMIT_FULL" != "$SOURCE_HEAD_SHA" ]; then
+            echo "Artifact commit $COMMIT_FULL does not match source run $SOURCE_HEAD_SHA" >&2
+            exit 1
+          fi
+
+          for NAME in "$SLOT_NAME" "$FIT_NAME"; do
+            if [ "$NAME" != "$(basename -- "$NAME")" ]; then
+              echo "Artifact metadata contains an invalid filename: $NAME" >&2
+              exit 1
+            fi
+          done
+
+          COMMIT_SHORT=${COMMIT_FULL:0:12}
+          if [[ "$SLOT_NAME" != xr1710g-uboot-*-"$COMMIT_SHORT"-flash-slot.bin ]]; then
+            echo "Unexpected flash slot filename: $SLOT_NAME" >&2
+            exit 1
+          fi
+
+          SLOT_STEM=${SLOT_NAME#xr1710g-uboot-}
+          SLOT_STEM=${SLOT_STEM%-flash-slot.bin}
+          RELEASE_DATE=${SLOT_STEM%-"$COMMIT_SHORT"}
+          if ! [[ "$RELEASE_DATE" =~ ^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}$ ]]; then
+            echo "Could not read the release date from $SLOT_NAME" >&2
+            exit 1
+          fi
+
+          COMPACT_DATE=$(date -u -d "$RELEASE_DATE" +%Y%m%d)
+          EXPECTED_ARTIFACT="xr1710g-uboot-${COMPACT_DATE}-${COMMIT_SHORT}"
+          if [ "$SOURCE_ARTIFACT_NAME" != "$EXPECTED_ARTIFACT" ]; then
+            echo "Artifact name does not match its build metadata: $SOURCE_ARTIFACT_NAME" >&2
+            echo "Expected: $EXPECTED_ARTIFACT" >&2
+            exit 1
+          fi
+
+          EXPECTED_FIT="xr1710g-uboot-${RELEASE_DATE}-${COMMIT_SHORT}-chainloader.itb"
+          if [ "$FIT_NAME" != "$EXPECTED_FIT" ]; then
+            echo "Unexpected chainloader FIT filename: $FIT_NAME" >&2
+            echo "Expected: $EXPECTED_FIT" >&2
+            exit 1
+          fi
+
+          SLOT_PATH="$ARTIFACT_DIR/$SLOT_NAME"
+          FIT_PATH="$ARTIFACT_DIR/$FIT_NAME"
+          for FILE in "$SLOT_PATH" "$FIT_PATH"; do
+            if [ ! -f "$FILE" ]; then
+              echo "Release asset not found: $FILE" >&2
+              exit 1
+            fi
+          done
+
+          expected_sha() {
+            local name=$1
+
+            awk -v name="$name" '
+              NF >= 2 {
+                path = $2
+                sub(/^.*\//, "", path)
+                if (path == name) {
+                  print $1
+                  exit
+                }
+              }
+            ' "$INFO_FILE"
+          }
+
+          EXPECTED_SLOT_SHA=$(expected_sha "$SLOT_NAME")
+          EXPECTED_FIT_SHA=$(expected_sha "$FIT_NAME")
+          ACTUAL_SLOT_SHA=$(sha256sum "$SLOT_PATH" | awk '{print $1}')
+          ACTUAL_FIT_SHA=$(sha256sum "$FIT_PATH" | awk '{print $1}')
+          if [ "$EXPECTED_SLOT_SHA" != "$ACTUAL_SLOT_SHA" ]; then
+            echo "Flash slot SHA256 mismatch" >&2
+            exit 1
+          fi
+          if [ "$EXPECTED_FIT_SHA" != "$ACTUAL_FIT_SHA" ]; then
+            echo "Chainloader FIT SHA256 mismatch" >&2
+            exit 1
+          fi
+
+          SLOT_MAGIC=$(dd if="$SLOT_PATH" bs=1 count=4 status=none |
+            od -An -tx1 | tr -d ' \n')
+          FIT_MAGIC=$(dd if="$SLOT_PATH" bs=1 skip=$((0x2100)) count=4 status=none |
+            od -An -tx1 | tr -d ' \n')
+          if [ "$SLOT_MAGIC" != "27051956" ] || [ "$FIT_MAGIC" != "d00dfeed" ]; then
+            echo "Invalid chainloader slot magic: offset0=$SLOT_MAGIC offset2100=$FIT_MAGIC" >&2
+            exit 1
+          fi
+
+          RELEASE_TAG="${RELEASE_DATE}-${COMMIT_SHORT}"
+          {
+            echo "artifact_dir=$ARTIFACT_DIR"
+            echo "commit=$COMMIT_FULL"
+            echo "commit_short=$COMMIT_SHORT"
+            echo "fit_name=$FIT_NAME"
+            echo "release_date=$RELEASE_DATE"
+            echo "slot_name=$SLOT_NAME"
+            echo "tag=$RELEASE_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Validated flash slot: $SLOT_NAME"
+          echo "Validated chainloader FIT: $FIT_NAME"
+          echo "Release tag: $RELEASE_TAG"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
+          RELEASE_MODE: ${{ inputs.release_type }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          RELEASE_TITLE: XR1710G U-Boot-${{ steps.metadata.outputs.release_date }}-g${{ steps.metadata.outputs.commit_short }}
+          SLOT_NAME: ${{ steps.metadata.outputs.slot_name }}
+          FIT_NAME: ${{ steps.metadata.outputs.fit_name }}
+          ARTIFACT_DIR: ${{ steps.metadata.outputs.artifact_dir }}
+          TARGET_SHA: ${{ steps.metadata.outputs.commit }}
+          COMMIT_SHORT: ${{ steps.metadata.outputs.commit_short }}
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          case "$RELEASE_MODE" in
+            pre-release|release) ;;
+            *)
+              echo "Unsupported release mode: $RELEASE_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          SLOT_PATH="$ARTIFACT_DIR/$SLOT_NAME"
+          FIT_PATH="$ARTIFACT_DIR/$FIT_NAME"
+          SLOT_SHA=$(sha256sum "$SLOT_PATH" | awk '{print $1}')
+          FIT_SHA=$(sha256sum "$FIT_PATH" | awk '{print $1}')
+          NOTES_FILE=$(mktemp)
+          trap 'rm -f "$NOTES_FILE"' EXIT
+          cat > "$NOTES_FILE" <<EOF
+          Automated build from commit [\`${COMMIT_SHORT}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${TARGET_SHA}).
+
+          Artifact source run: [${SOURCE_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID})
+
+          **Release channel:** ${RELEASE_MODE}
+
+          ## Files
+
+          - **\`${SLOT_NAME}\`** — Flash through the HTTP Recovery \`uboot\` target.
+          - **\`${FIT_NAME}\`** — RAM-only validation through TFTP. Do not upload this file to HTTP Recovery.
+
+          ## SHA256
+
+          \`\`\`text
+          ${SLOT_SHA}  ${SLOT_NAME}
+          ${FIT_SHA}  ${FIT_NAME}
+          \`\`\`
+
+          ## Flash via HTTP Recovery
+
+          1. Connect the PC to the device's **10GbE port** and enable DHCP.
+          2. Connect the device to power.
+          3. Wait for the front red LED to light up.
+          4. Within 5 seconds, use a pin to press and hold the recessed \`RESET\` button.
+          5. Keep holding until the front LEDs turn off and then light up again.
+          6. Release the \`RESET\` button when the LEDs begin cycling in an alternating rainbow breathing pattern.
+          7. Open [http://192.168.255.1](http://192.168.255.1/).
+          8. Select the **\`uboot\`** target.
+          9. Upload **\`${SLOT_NAME}\`** and wait for flashing to complete.
+
+          > **Important: Do not power off, disconnect, or reboot the device during recovery!**
+
+          ---
+
+          ## Donate
+
+          <p align="center">
+            如果这个项目对您有所帮助，欢迎请我喝杯咖啡，支持后续维护和更新。
+          </p>
+
+          <p align="center">
+            <img src="https://github.com/naoki66/XR1710G-http-uboot/raw/${RELEASE_TAG}/c6ea388c976395326514814f80d512d5.png" alt="Donate" width="240">
+          </p>
+          EOF
+
+          api_presence() {
+            local endpoint=$1
+            local error_file
+
+            error_file=$(mktemp)
+            if gh api "$endpoint" >/dev/null 2>"$error_file"; then
+              rm -f "$error_file"
+              printf 'true\n'
+            elif grep -q '(HTTP 404)' "$error_file"; then
+              rm -f "$error_file"
+              printf 'false\n'
+            else
+              cat "$error_file" >&2
+              rm -f "$error_file"
+              return 2
+            fi
+          }
+
+          TAG_EXISTS=$(api_presence "repos/${GH_REPO}/git/ref/tags/${RELEASE_TAG}")
+          if [ "$TAG_EXISTS" = true ]; then
+            TAG_COMMIT=$(gh api "repos/${GH_REPO}/commits/${RELEASE_TAG}" --jq '.sha')
+            TAG_COMMIT=${TAG_COMMIT,,}
+            if [ "$TAG_COMMIT" != "$TARGET_SHA" ]; then
+              echo "Existing tag $RELEASE_TAG points to $TAG_COMMIT, expected $TARGET_SHA" >&2
+              exit 1
+            fi
+          fi
+
+          RELEASE_EXISTS=$(api_presence "repos/${GH_REPO}/releases/tags/${RELEASE_TAG}")
+
+          RELEASE_FLAGS=(
+            --title "$RELEASE_TITLE"
+            --notes-file "$NOTES_FILE"
+            --draft=false
+          )
+          if [ "$RELEASE_MODE" = "pre-release" ]; then
+            RELEASE_FLAGS+=(--prerelease --latest=false)
+          else
+            RELEASE_FLAGS+=(--prerelease=false --latest)
+          fi
+
+          if [ "$RELEASE_EXISTS" = true ]; then
+            gh release edit "$RELEASE_TAG" "${RELEASE_FLAGS[@]}"
+            gh release upload "$RELEASE_TAG" "$SLOT_PATH" "$FIT_PATH" --clobber
+          else
+            if [ "$TAG_EXISTS" = true ]; then
+              TARGET_FLAGS=(--verify-tag)
+            else
+              TARGET_FLAGS=(--target "$TARGET_SHA")
+            fi
+
+            if ! gh release create "$RELEASE_TAG" "$SLOT_PATH" "$FIT_PATH" \
+              "${TARGET_FLAGS[@]}" "${RELEASE_FLAGS[@]}"; then
+              if [ "$TAG_EXISTS" = false ] && [ "$HAS_RELEASE_TOKEN" != "true" ]; then
+                echo "GitHub may require a token with Workflows: write for an unreferenced old commit." >&2
+                echo "Create the release tag first, or configure a RELEASE_TOKEN repository secret." >&2
+              fi
+              exit 1
+            fi
+          fi
