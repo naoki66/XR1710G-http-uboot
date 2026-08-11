@@ -184,6 +184,7 @@ jobs:
 
       - name: Create or update GitHub Release
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_MODE: ${{ needs.build.outputs.build_mode }}
           RELEASE_TAG: ${{ needs.build.outputs.tag }}
