@@ -118,6 +118,25 @@ button,input,select{font:inherit;letter-spacing:0}
   font-size:11px;
   line-height:1.6;
 }
+.language-switcher{
+  position:absolute;
+  top:18px;
+  right:22px;
+  z-index:2;
+}
+.language-button{
+  min-width:72px;
+  height:32px;
+  padding:0 10px;
+  border:1px solid var(--line-strong);
+  border-radius:6px;
+  color:var(--ink);
+  background:var(--side);
+  cursor:pointer;
+  font-size:12px;
+  font-weight:700;
+}
+.language-button:hover{border-color:var(--blue);color:var(--blue)}
 .side-meta strong{display:block;color:#44505e;font-weight:680}
 .version-link{color:inherit;text-decoration:none}
 .version-link:hover{text-decoration:underline}
@@ -361,14 +380,14 @@ button,input,select{font:inherit;letter-spacing:0}
 <div class='app'>
   <aside class='sidebar'>
     <div class='brand'>
-      <strong>XR1710G Recovery Mode</strong><span>Recovery WebUI</span>
+      <strong data-i18n='brand.title'>XR1710G Recovery Mode</strong><span data-i18n='brand.subtitle'>Recovery WebUI</span>
     </div>
     <nav class='nav' aria-label='Recovery target'>
-      <button class='nav-button active' type='button' data-target='firmware' aria-current='page'><span class='nav-dot'></span>Firmware Recovery</button>
-      <button class='nav-button' type='button' data-target='uboot'><span class='nav-dot'></span>Update U-Boot</button>
+      <button class='nav-button active' type='button' data-target='firmware' aria-current='page'><span class='nav-dot'></span><span data-i18n='nav.firmware'>Firmware Recovery</span></button>
+      <button class='nav-button' type='button' data-target='uboot'><span class='nav-dot'></span><span data-i18n='nav.uboot'>Update U-Boot</span></button>
     </nav>
     <div class='side-actions'>
-      <button class='reboot-button' id='reboot-button' type='button'>Reboot to System</button>
+      <button class='reboot-button' id='reboot-button' type='button' data-i18n='nav.reboot'>Reboot to System</button>
     </div>
     <div class='side-meta'>
       <strong>192.168.255.1</strong>
@@ -377,37 +396,38 @@ button,input,select{font:inherit;letter-spacing:0}
   </aside>
 
   <main class='main'>
+    <div class='language-switcher'><button class='language-button' id='language-button' type='button' aria-label='Switch language'>中文</button></div>
     <div class='workspace'>
       <section class='panel'>
         <div class='panel-inner'>
           <header class='heading'>
-            <h1 id='page-title'>Firmware Recovery</h1>
-            <p id='page-copy'>Upload an OpenWrt FIT image and recreate the selected UBI layout.</p>
+            <h1 id='page-title' data-i18n='firmware.title'>Firmware Recovery</h1>
+            <p id='page-copy' data-i18n='firmware.copy'>Upload an OpenWrt FIT image and recreate the selected UBI layout.</p>
           </header>
 
           <div class='target-info'>
-            <span class='target-label'>Target</span><span class='target-value' id='target-value'>ubi:fit</span>
-            <span class='target-label'>Operation</span><span class='target-value' id='scope-value'>Erase and recreate the complete selected UBI partition</span>
-            <span class='target-label'>Recovery</span><span class='target-value' id='preserve-value'>Factory data is restored from DSD; saved U-Boot environment is reset</span>
-            <span class='target-label'>Detected</span><span class='target-value' id='detected-layout'>Checking current layout...</span>
+            <span class='target-label' data-i18n='labels.target'>Target</span><span class='target-value' id='target-value'>ubi:fit</span>
+            <span class='target-label' data-i18n='labels.operation'>Operation</span><span class='target-value' id='scope-value'>Erase and recreate the complete selected UBI partition</span>
+            <span class='target-label' data-i18n='labels.recovery'>Recovery</span><span class='target-value' id='preserve-value'>Factory data is restored from DSD; saved U-Boot environment is reset</span>
+            <span class='target-label' data-i18n='labels.detected'>Detected</span><span class='target-value' id='detected-layout'>Checking current layout...</span>
           </div>
 
           <div class='layout-block' id='layout-block'>
-            <label class='layout-label' for='layout-select'>Image UBI layout</label>
+            <label class='layout-label' for='layout-select' data-i18n='labels.layout'>Image UBI layout</label>
             <select class='layout-select' id='layout-select'>
-              <option value='2.0'>UBI 2.0 - 439 MiB (recommended)</option>
-              <option value='1.5'>UBI 1.5 - 473.75 MiB</option>
-              <option value='1.0'>UBI 1.0 - 503 MiB (legacy)</option>
+              <option value='2.0' data-i18n='layout.2.0'>UBI 2.0 - 439 MiB (recommended)</option>
+              <option value='1.5' data-i18n='layout.1.5'>UBI 1.5 - 473.75 MiB</option>
+              <option value='1.0' data-i18n='layout.1.0'>UBI 1.0 - 503 MiB (legacy)</option>
             </select>
             <p class='layout-help' id='layout-help'></p>
           </div>
 
           <div class='file-block'>
-            <label class='file-label'>Select image file</label>
+            <label class='file-label' data-i18n='labels.selectFile'>Select image file</label>
             <input id='file-input' type='file' accept='.bin,.img,.itb'>
             <div class='file-row'>
-              <button class='choose-button' id='choose-button' type='button'>Choose File</button>
-              <span class='file-name' id='file-name'>No file selected</span>
+              <button class='choose-button' id='choose-button' type='button' data-i18n='buttons.choose'>Choose File</button>
+              <span class='file-name' id='file-name' data-i18n='file.none'>No file selected</span>
             </div>
             <p class='file-help' id='file-help'>Firmware images must be at least 1 MiB</p>
           </div>
@@ -418,29 +438,29 @@ button,input,select{font:inherit;letter-spacing:0}
 
           <section class='progress-section' aria-label='Recovery progress'>
             <div class='progress-head'>
-              <strong>Recovery Progress</strong>
+              <strong data-i18n='labels.progress'>Recovery Progress</strong>
               <span class='state' id='state' data-tone='idle'>Idle</span>
             </div>
             <p class='status-message' id='status-message'>Select an image file.</p>
             <div class='progress-row' id='row-upload'>
-              <span class='progress-label'>Upload</span>
+              <span class='progress-label' data-i18n='labels.upload'>Upload</span>
               <div class='progress-track'><div class='progress-fill' id='upload-fill'></div></div>
               <span class='progress-percent' id='upload-percent'>0%</span>
             </div>
             <div class='progress-row' id='row-erase'>
-              <span class='progress-label'>Erase</span>
+              <span class='progress-label' data-i18n='labels.erase'>Erase</span>
               <div class='progress-track'><div class='progress-fill' id='erase-fill'></div></div>
               <span class='progress-percent' id='erase-percent'>0%</span>
             </div>
             <div class='progress-row' id='row-write'>
-              <span class='progress-label'>Write</span>
+              <span class='progress-label' data-i18n='labels.write'>Write</span>
               <div class='progress-track'><div class='progress-fill' id='write-fill'></div></div>
               <span class='progress-percent' id='write-percent'>0%</span>
             </div>
           </section>
 
           <aside class='notice'>
-            <strong>Important</strong>
+            <strong data-i18n='labels.important'>Important</strong>
             <ul id='notice-list'>
               <li class='critical-warning'>Do not power off or reboot the device during recovery!</li>
               <li>The selected UBI partition is fully erased and rebuilt.</li>
@@ -463,6 +483,42 @@ var busy=false;
 var pollTimer=null;
 var pollEpoch=0;
 var pollOutcome=0;
+var language=(localStorage.getItem('xr1710g-language')||navigator.language||'en').toLowerCase().indexOf('zh')===0?'zh':'en';
+
+var translations={
+  en:{
+    'brand.title':'XR1710G Recovery Mode','brand.subtitle':'Recovery WebUI','nav.firmware':'Firmware Recovery','nav.uboot':'Update U-Boot','nav.reboot':'Reboot to System',
+    'labels.target':'Target','labels.operation':'Operation','labels.recovery':'Recovery','labels.detected':'Detected','labels.layout':'Image UBI layout','labels.selectFile':'Select image file','labels.progress':'Recovery Progress','labels.upload':'Upload','labels.erase':'Erase','labels.write':'Write','labels.important':'Important',
+    'buttons.choose':'Choose File','file.none':'No file selected','file.min':'Firmware images must be at least 1 MiB','file.ready':'File ready.','file.select':'Select an image file.','file.invalid':'The selected file does not meet the target requirements.','file.firmwareSize':'Firmware images must be at least 1 MiB.','file.ubootSize':'U-Boot images must not exceed 1 MiB.',
+    'state.idle':'Idle','state.uploading':'Uploading','state.processing':'Processing','state.checking':'Checking Status','state.erasing':'Erasing','state.writing':'Writing','state.complete':'Complete','state.failed':'Failed','state.rejected':'Rejected','state.network':'Network Error','state.rebooting':'Rebooting',
+    'msg.uploading':'Uploading the image file.','msg.processing':'Upload complete. Waiting for erase and write operations.','msg.checking':'Upload was sent, but confirmation was interrupted. Do not power off or retry.','msg.erasing':'Erasing the target region. Do not power off the device.','msg.writing':'Writing the image. Do not power off the device.','msg.select':'Select an image file.','msg.ready':'Ready to upload.','msg.complete':'Recovery complete. The device restarts in {0} seconds.','msg.failed':'Recovery failed. Check the serial console log.','msg.rejected':'The server rejected this image. Check the file and try again.','msg.read':'Could not read the selected file.','msg.network':'The upload connection failed before the image was sent. Reconnect and try again.','msg.rebootConfirm':'Reboot the device and continue normal startup? Make sure the recovery button is released.','msg.rebootSend':'Sending the reboot request.','msg.rebootRejected':'The reboot request was not accepted. Try again.','msg.rebooting':'Restarting into the system in {0} seconds.','msg.rebootDone':'The device is restarting. Reconnect after the system finishes booting.','msg.detecting':'Checking current layout...','msg.detected':'UBI {0}',
+    'firmware.title':'Firmware Recovery','firmware.copy':'Upload an OpenWrt FIT image and recreate the selected UBI layout.','firmware.target':'ubi:fit','firmware.scope':'Erase and recreate the complete selected UBI partition','firmware.preserve':'Factory data is restored from DSD; saved U-Boot environment is reset','firmware.help':'Firmware images must be at least 1 MiB','firmware.action':'Upload and Recover',
+    'uboot.title':'Update U-Boot','uboot.copy':'Upload an XR1710G chainloader slot image. Only the raw U-Boot slot will be written.','uboot.target':'SPI-NAND @ 0x600000','uboot.scope':'Write the 1 MiB chainloader slot','uboot.preserve':'All UBI firmware volumes and configuration data','uboot.help':'Use xr1710g-chainloader-slot.bin, not u-boot.bin','uboot.action':'Upload and Update',
+    'layout.2.0':'UBI 2.0 - 439 MiB (recommended)','layout.1.5':'UBI 1.5 - 473.75 MiB','layout.1.0':'UBI 1.0 - 503 MiB (legacy)',
+    'layout.2.0.help':'Current safe layout with 66 MiB reserved for vendor BMT/BBT.','layout.1.5.help':'Intermediate layout with 31.25 MiB reserved for vendor BMT/BBT.','layout.1.0.help':'Legacy layout. Select only for an image and chainloader built for UBI 1.0.',
+    'notice.firmware.0':'Do not power off or reboot the device during recovery!','notice.firmware.1':'The selected UBI partition is fully erased and rebuilt.','notice.firmware.2':"The selection must match the image's embedded device tree.",'notice.firmware.3':'The device restarts automatically when recovery completes.','notice.uboot.0':'Do not power off or reboot the device during the U-Boot update!','notice.uboot.1':'The image format is validated before writing.','notice.uboot.2':'UBI firmware volumes are not modified.'
+  },
+  zh:{
+    'brand.title':'XR1710G 恢复模式','brand.subtitle':'恢复网页界面','nav.firmware':'固件恢复','nav.uboot':'更新 U-Boot','nav.reboot':'重启进入系统',
+    'labels.target':'目标','labels.operation':'操作','labels.recovery':'恢复','labels.detected':'检测到','labels.layout':'镜像 UBI 布局','labels.selectFile':'选择镜像文件','labels.progress':'恢复进度','labels.upload':'上传','labels.erase':'擦除','labels.write':'写入','labels.important':'重要提示',
+    'buttons.choose':'选择文件','file.none':'未选择文件','file.min':'固件镜像至少需要 1 MiB','file.ready':'文件已准备就绪。','file.select':'请选择镜像文件。','file.invalid':'所选文件不符合目标要求。','file.firmwareSize':'固件镜像至少需要 1 MiB。','file.ubootSize':'U-Boot 镜像不能超过 1 MiB。',
+    'state.idle':'空闲','state.uploading':'上传中','state.processing':'处理中','state.checking':'检查状态','state.erasing':'擦除中','state.writing':'写入中','state.complete':'完成','state.failed':'失败','state.rejected':'已拒绝','state.network':'网络错误','state.rebooting':'重启中',
+    'msg.uploading':'正在上传镜像文件。','msg.processing':'上传完成，等待擦除和写入操作。','msg.checking':'上传已发送，但确认被中断。请勿断电或重试。','msg.erasing':'正在擦除目标区域，请勿断电。','msg.writing':'正在写入镜像，请勿断电。','msg.select':'请选择镜像文件。','msg.ready':'可以上传。','msg.complete':'恢复完成，设备将在 {0} 秒后重启。','msg.failed':'恢复失败，请检查串口日志。','msg.rejected':'服务器拒绝了此镜像，请检查文件后重试。','msg.read':'无法读取所选文件。','msg.network':'镜像尚未发送，上传连接已失败。请重新连接后重试。','msg.rebootConfirm':'重启设备并继续正常启动？请确认已松开恢复按钮。','msg.rebootSend':'正在发送重启请求。','msg.rebootRejected':'重启请求未被接受，请重试。','msg.rebooting':'设备将在 {0} 秒后重启进入系统。','msg.rebootDone':'设备正在重启，系统启动完成后请重新连接。','msg.detecting':'正在检查当前布局...','msg.detected':'UBI {0}',
+    'firmware.title':'固件恢复','firmware.copy':'上传 OpenWrt FIT 镜像并重建所选 UBI 布局。','firmware.target':'ubi:fit','firmware.scope':'擦除并重建完整的 UBI 分区','firmware.preserve':'从 DSD 恢复出厂数据，并重置已保存的 U-Boot 环境','firmware.help':'固件镜像至少需要 1 MiB','firmware.action':'上传并恢复',
+    'uboot.title':'更新 U-Boot','uboot.copy':'上传 XR1710G chainloader 槽位镜像，只写入原始 U-Boot 槽位。','uboot.target':'SPI-NAND @ 0x600000','uboot.scope':'写入 1 MiB chainloader 槽位','uboot.preserve':'所有 UBI 固件卷和配置数据','uboot.help':'请使用 xr1710g-chainloader-slot.bin，不要使用 u-boot.bin','uboot.action':'上传并更新',
+    'layout.2.0':'UBI 2.0 - 439 MiB（推荐）','layout.1.5':'UBI 1.5 - 473.75 MiB','layout.1.0':'UBI 1.0 - 503 MiB（旧版）',
+    'layout.2.0.help':'当前安全布局，为厂商 BMT/BBT 预留 66 MiB。','layout.1.5.help':'中间布局，为厂商 BMT/BBT 预留 31.25 MiB。','layout.1.0.help':'旧版布局，仅用于 UBI 1.0 构建的镜像和 chainloader。','notice.firmware.0':'恢复期间请勿断电或重启设备！','notice.firmware.1':'所选 UBI 分区将被完全擦除并重建。','notice.firmware.2':'所选布局必须与镜像内嵌的设备树匹配。','notice.firmware.3':'恢复完成后设备会自动重启。','notice.uboot.0':'更新 U-Boot 期间请勿断电或重启设备！','notice.uboot.1':'写入前会验证镜像格式。','notice.uboot.2':'不会修改 UBI 固件卷。'
+  }
+};
+function t(key){return (translations[language]&&translations[language][key])||translations.en[key]||key}
+function tm(key,arg){return t(key).replace('{0}',arg)}
+function applyLanguage(){
+  document.documentElement.lang=language==='zh'?'zh-CN':'en';
+  document.querySelectorAll('[data-i18n]').forEach(function(el){el.textContent=t(el.getAttribute('data-i18n'))});
+  document.getElementById('language-button').textContent=language==='zh'?'English':'中文';
+  document.getElementById('language-button').setAttribute('aria-label',language==='zh'?'切换到英文':'Switch language');
+  document.title=language==='zh'?'XR1710G 恢复模式':'XR1710G Recovery Mode';
+}
 
 var profiles={
 	  firmware:{
@@ -511,7 +567,7 @@ function updateLayout(){
   var layout=layouts[selectedLayout]||layouts['2.0'];
   layoutBlock.hidden=activeTarget!=='firmware';
   layoutSelect.value=selectedLayout;
-  layoutHelp.textContent=layout.help;
+  layoutHelp.textContent=t('layout.'+selectedLayout+'.help');
   layoutHelp.className='layout-help'+(layout.warning?' warning':'');
   if(activeTarget==='firmware'){
     document.getElementById('target-value').textContent=layout.part+':fit ('+layout.size+', ends '+layout.end+')';
@@ -529,19 +585,19 @@ function setTarget(target){
     if(active)buttons[i].setAttribute('aria-current','page');
     else buttons[i].removeAttribute('aria-current');
   }
-  document.getElementById('page-title').textContent=p.title;
-  document.getElementById('page-copy').textContent=p.copy;
-	  document.getElementById('target-value').textContent=p.target;
-  document.getElementById('scope-value').textContent=p.scope;
-  document.getElementById('preserve-value').textContent=p.preserve;
-  fileHelp.textContent=p.help;
-  uploadButton.textContent=p.action;
+  document.getElementById('page-title').textContent=t(activeTarget+'.title');
+  document.getElementById('page-copy').textContent=t(activeTarget+'.copy');
+	  document.getElementById('target-value').textContent=t(activeTarget+'.target');
+  document.getElementById('scope-value').textContent=t(activeTarget+'.scope');
+  document.getElementById('preserve-value').textContent=t(activeTarget+'.preserve');
+  fileHelp.textContent=t(activeTarget+'.help');
+  uploadButton.textContent=t(activeTarget+'.action');
   var list=document.getElementById('notice-list');
   list.textContent='';
 	  for(var n=0;n<p.notices.length;n++){
     var item=document.createElement('li');
 	    if(n===0)item.className='critical-warning';
-    item.textContent=p.notices[n];
+    item.textContent=t('notice.'+activeTarget+'.'+n);
     list.appendChild(item);
 	  }
 	  updateLayout();
@@ -557,8 +613,8 @@ function formatBytes(bytes){
 
 function fileError(){
   if(!selectedFile)return'';
-  if(activeTarget==='firmware'&&selectedFile.size<1024*1024)return'Firmware images must be at least 1 MiB.';
-  if(activeTarget==='uboot'&&selectedFile.size>1024*1024)return'U-Boot images must not exceed 1 MiB.';
+  if(activeTarget==='firmware'&&selectedFile.size<1024*1024)return t('file.firmwareSize');
+  if(activeTarget==='uboot'&&selectedFile.size>1024*1024)return t('file.ubootSize');
   return'';
 }
 
@@ -566,21 +622,21 @@ function validateFile(){
   var error=fileError();
   fileHelp.className='file-help';
   if(!selectedFile){
-    fileName.textContent='No file selected';
+    fileName.textContent=t('file.none');
     fileName.className='file-name';
-    fileHelp.textContent=profile().help;
-    statusMessage.textContent='Select an image file.';
+    fileHelp.textContent=t(activeTarget+'.help');
+    statusMessage.textContent=t('msg.select');
   }else{
     fileName.textContent=selectedFile.name+'  ('+formatBytes(selectedFile.size)+')';
     fileName.className='file-name selected';
     if(error){
       fileHelp.textContent=error;
       fileHelp.classList.add('error');
-      statusMessage.textContent='The selected file does not meet the target requirements.';
+      statusMessage.textContent=t('file.invalid');
     }else{
-      fileHelp.textContent='File ready.';
+      fileHelp.textContent=t('file.ready');
       fileHelp.classList.add('ok');
-      statusMessage.textContent='Ready to upload.';
+      statusMessage.textContent=t('msg.ready');
     }
   }
   uploadButton.disabled=busy||!selectedFile||!!error;
@@ -614,7 +670,7 @@ function resetProgress(){
   setProgress('upload',0,'');
   setProgress('erase',0,'');
   setProgress('write',0,'');
-  setState('Idle','idle',selectedFile?'Ready to upload.':'Select an image file.');
+  setState(t('state.idle'),'idle',selectedFile?t('msg.ready'):t('msg.select'));
 }
 
 function updateFlashProgress(data){
@@ -623,18 +679,18 @@ function updateFlashProgress(data){
     setProgress('upload',100,'complete');
     setProgress('erase',data.erase_total?data.erase_done*100/data.erase_total:0,'active');
     setProgress('write',0,'');
-    setState('Erasing','working','Erasing the target region. Do not power off the device.');
+    setState(t('state.erasing'),'working',t('msg.erasing'));
   }else if(phase===2){
     setProgress('upload',100,'complete');
     setProgress('erase',100,'complete');
     setProgress('write',data.write_total?data.write_done*100/data.write_total:0,'active');
-    setState('Writing','working','Writing the image. Do not power off the device.');
+    setState(t('state.writing'),'working',t('msg.writing'));
   }
 }
 
 function startCountdown(seconds){
   function tick(left){
-    setState('Complete','success','Recovery complete. The device restarts in '+left+' seconds.');
+    setState(t('state.complete'),'success',tm('msg.complete',left));
     if(left>0)setTimeout(function(){tick(left-1)},1000);
   }
   tick(seconds);
@@ -642,10 +698,8 @@ function startCountdown(seconds){
 
 function startRebootCountdown(seconds){
   function tick(left){
-    var message=left>0
-      ?'Restarting into the system in '+left+' seconds.'
-      :'The device is restarting. Reconnect after the system finishes booting.';
-    setState('Rebooting','working',message);
+    var message=left>0?tm('msg.rebooting',left):t('msg.rebootDone');
+    setState(t('state.rebooting'),'working',message);
     if(left>0)setTimeout(function(){tick(left-1)},1000);
   }
   tick(seconds);
@@ -653,9 +707,9 @@ function startRebootCountdown(seconds){
 
 async function rebootToSystem(){
   if(busy)return;
-  if(!window.confirm('Reboot the device and continue normal startup? Make sure the recovery button is released.'))return;
+  if(!window.confirm(t('msg.rebootConfirm')))return;
   setBusy(true);
-  setState('Rebooting','working','Sending the reboot request.');
+  setState(t('state.rebooting'),'working',t('msg.rebootSend'));
   try{
     var response=await fetch('/reboot',{method:'POST',body:'',cache:'no-store'});
     await response.text();
@@ -663,7 +717,7 @@ async function rebootToSystem(){
     startRebootCountdown(3);
   }catch(error){
     setBusy(false);
-    setState('Failed','error','The reboot request was not accepted. Try again.');
+    setState(t('state.failed'),'error',t('msg.rebootRejected'));
   }
 }
 
@@ -687,7 +741,7 @@ async function pollStatus(epoch){
       pollOutcome=-1;
       if(pollTimer)clearInterval(pollTimer);
       pollTimer=null;
-      setState('Failed','error','Recovery failed. Check the serial console log.');
+      setState(t('state.failed'),'error',t('msg.failed'));
       setBusy(false);
     }
   }catch(error){}
@@ -695,7 +749,8 @@ async function pollStatus(epoch){
 
 function startStatusPolling(epoch,label,message){
   if(epoch!==pollEpoch||pollOutcome!==0)return;
-  setState(label,'working',message);
+  var stateKey=label==='Processing'?'state.processing':(label==='Checking Status'?'state.checking':null);
+  setState(stateKey?t(stateKey):label,'working',message);
   if(pollTimer)return;
   pollTimer=setInterval(function(){pollStatus(epoch)},500);
   setTimeout(function(){pollStatus(epoch)},100);
@@ -710,13 +765,13 @@ async function upload(){
   if(pollTimer)clearInterval(pollTimer);
   pollTimer=null;
   setProgress('upload',0,'active');
-  setState('Uploading','working','Uploading the image file.');
+  setState(t('state.uploading'),'working',t('msg.uploading'));
 
   var payload;
   try{
     payload=await selectedFile.arrayBuffer();
   }catch(error){
-    setState('Failed','error','Could not read the selected file.');
+    setState(t('state.failed'),'error',t('msg.read'));
     setBusy(false);
     return;
   }
@@ -734,7 +789,7 @@ async function upload(){
   });
   xhr.addEventListener('load',function(){
     if(xhr.status<200||xhr.status>=300){
-      setState('Rejected','error','The server rejected this image. Check the file and try again.');
+      setState(t('state.rejected'),'error',t('msg.rejected'));
       setBusy(false);
       return;
     }
@@ -747,7 +802,7 @@ async function upload(){
       startStatusPolling(pollEpoch,'Checking Status','Upload was sent, but confirmation was interrupted. Do not power off or retry.');
       return;
     }
-    setState('Network Error','error','The upload connection failed before the image was sent. Reconnect and try again.');
+    setState(t('state.network'),'error',t('msg.network'));
     setBusy(false);
   });
 	  var uploadUri='/upload/'+activeTarget;
@@ -771,8 +826,15 @@ layoutSelect.addEventListener('change',function(){
 });
 uploadButton.addEventListener('click',upload);
 rebootButton.addEventListener('click',rebootToSystem);
+document.getElementById('language-button').addEventListener('click',function(){
+  language=language==='zh'?'en':'zh';
+  localStorage.setItem('xr1710g-language',language);
+  applyLanguage();
+  setTarget(activeTarget);
+});
 
 (async function(){
+  applyLanguage();
   setTarget('firmware');
   try{
     var response=await fetch('/about',{cache:'no-store'});
@@ -799,7 +861,7 @@ rebootButton.addEventListener('click',rebootToSystem);
 	      document.getElementById('footer-version').textContent=versionText;
 	    }
 	    if(data&&data.detected_layout){
-	      document.getElementById('detected-layout').textContent='UBI '+data.detected_layout;
+	      document.getElementById('detected-layout').textContent=tm('msg.detected',data.detected_layout);
 	    }
   }catch(error){}
 })();
